@@ -8,6 +8,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { BranchesModule } from './modules/branches/branches.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
+import { RolesModule } from './modules/roles/roles.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
@@ -23,6 +24,7 @@ import { UsersModule } from './modules/users/users.module';
     AuthModule,
     OrganizationsModule,
     BranchesModule,
+    RolesModule,
     UsersModule,
     HealthModule,
   ],
