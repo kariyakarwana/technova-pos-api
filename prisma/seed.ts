@@ -46,6 +46,24 @@ const permissions = [
     key: "settings:manage",
     description: "Manage system settings",
   },
+  { key: "settings:view", description: "View organization settings" },
+  { key: "branches:view", description: "View organization branches" },
+  { key: "branches:manage", description: "Create and update branches" },
+  { key: "products:view", description: "View products and categories" },
+  { key: "products:manage", description: "Manage products and categories" },
+  { key: "suppliers:view", description: "View suppliers" },
+  { key: "suppliers:manage", description: "Manage suppliers" },
+  { key: "purchases:view", description: "View purchase orders and receipts" },
+  { key: "inventory:view", description: "View inventory and stock movements" },
+  { key: "sales:view", description: "View sales transactions" },
+  { key: "customers:view", description: "View customers" },
+  { key: "customers:manage", description: "Manage customers and loyalty" },
+  { key: "discounts:manage", description: "Manage discount rules" },
+  { key: "returns:manage", description: "Manage returns and refunds" },
+  { key: "credit:manage", description: "Manage customer credit" },
+  { key: "warranties:manage", description: "Manage warranties" },
+  { key: "notifications:manage", description: "Manage notification delivery" },
+  { key: "reports:view", description: "View and export reports" },
 ];
 
 async function main() {
@@ -143,6 +161,56 @@ async function main() {
       userId: superAdmin.id,
       roleId: superAdminRole.id,
     },
+  });
+
+  const organization = await prisma.organization.upsert({
+    where: { registrationNumber: "TECHNOVA-DEMO" },
+    update: { name: "TechNova POS" },
+    create: {
+      name: "TechNova POS",
+      registrationNumber: "TECHNOVA-DEMO",
+      email,
+      branding: {
+        create: {
+          primaryColor: "#0D9488",
+          secondaryColor: "#115E59",
+        },
+      },
+    },
+  });
+
+  await prisma.organizationUser.upsert({
+    where: {
+      organizationId_userId: {
+        organizationId: organization.id,
+        userId: superAdmin.id,
+      },
+    },
+    update: {},
+    create: { organizationId: organization.id, userId: superAdmin.id },
+  });
+
+  const mainBranch = await prisma.branch.upsert({
+    where: {
+      organizationId_code: {
+        organizationId: organization.id,
+        code: "MAIN",
+      },
+    },
+    update: { name: "Main Branch" },
+    create: {
+      organizationId: organization.id,
+      code: "MAIN",
+      name: "Main Branch",
+    },
+  });
+
+  await prisma.userBranch.upsert({
+    where: {
+      userId_branchId: { userId: superAdmin.id, branchId: mainBranch.id },
+    },
+    update: { isDefault: true },
+    create: { userId: superAdmin.id, branchId: mainBranch.id, isDefault: true },
   });
 
   console.info(`Super Admin seeded: ${email}`);

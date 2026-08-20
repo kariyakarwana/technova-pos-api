@@ -5,7 +5,9 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { DatabaseModule } from './database/database.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { BranchesModule } from './modules/branches/branches.module';
 import { HealthModule } from './modules/health/health.module';
+import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
@@ -19,6 +21,8 @@ import { UsersModule } from './modules/users/users.module';
     IdempotencyModule,
     AuditModule,
     AuthModule,
+    OrganizationsModule,
+    BranchesModule,
     UsersModule,
     HealthModule,
   ],
