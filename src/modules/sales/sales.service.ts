@@ -101,17 +101,19 @@ export class SalesService {
       where: { id: dto.branchId, organizationId, status: RecordStatus.ACTIVE },
     });
     if (!branch) throw new NotFoundException('Branch not found.');
-    if (
-      dto.customerId &&
-      !(await this.prisma.customer.findFirst({
-        where: {
-          id: dto.customerId,
-          organizationId,
-          status: RecordStatus.ACTIVE,
-        },
-      }))
-    )
+    const customer = dto.customerId
+      ? await this.prisma.customer.findFirst({
+          where: {
+            id: dto.customerId,
+            organizationId,
+            status: RecordStatus.ACTIVE,
+          },
+        })
+      : null;
+    if (dto.customerId && !customer)
       throw new NotFoundException('Customer not found.');
+    if (dto.credit && !customer)
+      throw new BadRequestException('A credit sale requires a customer.');
     const productIds = [...new Set(dto.items.map((i) => i.productId))];
     const products = await this.prisma.product.findMany({
       where: {
@@ -179,8 +181,51 @@ export class SalesService {
       taxTotal = prepared.reduce((s, i) => s + i.tax, 0),
       total = subtotal - discountTotal + taxTotal;
     const paid = dto.payments.reduce((s, p) => s + p.amount, 0);
-    if (Math.abs(paid - total) > 0.01)
+    const balanceDue = total - paid;
+    if (!dto.credit && Math.abs(balanceDue) > 0.01)
       throw new BadRequestException('Payment total must equal the sale total.');
+    if (dto.credit && balanceDue <= 0)
+      throw new BadRequestException('A credit sale must have a balance due.');
+    if (paid > total + 0.01)
+      throw new BadRequestException(
+        'Payment total cannot exceed the sale total.',
+      );
+    if (dto.credit) {
+      const dueDate = new Date(dto.credit.dueDate);
+      if (dueDate <= now)
+        throw new BadRequestException('Credit due date must be in the future.');
+      const outstanding = await this.prisma.creditAgreement.aggregate({
+        where: {
+          customerId: customer!.id,
+          status: { in: ['ACTIVE', 'OVERDUE'] },
+        },
+        _sum: { outstandingBalance: true },
+      });
+      if (
+        Number(outstanding._sum.outstandingBalance ?? 0) + balanceDue >
+        Number(customer!.creditLimit)
+      )
+        throw new ConflictException('Customer credit limit would be exceeded.');
+      if (dto.credit.installments) {
+        const installmentTotal = dto.credit.installments.reduce(
+          (sum, item) => sum + item.amount,
+          0,
+        );
+        if (Math.abs(installmentTotal - balanceDue) > 0.01)
+          throw new BadRequestException(
+            'Installment total must equal the credit balance.',
+          );
+        if (
+          dto.credit.installments.some(
+            (item) =>
+              new Date(item.dueDate) > dueDate || new Date(item.dueDate) <= now,
+          )
+        )
+          throw new BadRequestException(
+            'Installment dates must be future dates no later than the agreement due date.',
+          );
+      }
+    }
     const grants: Array<{ serialNumber: string; activationUrl: string }> = [];
     const result = await this.prisma.$transaction(async (tx) => {
       const sale = await tx.sale.create({
@@ -195,7 +240,7 @@ export class SalesService {
           taxTotal,
           total,
           paidTotal: paid,
-          balanceDue: 0,
+          balanceDue,
           completedAt: now,
         },
       });
@@ -304,6 +349,31 @@ export class SalesService {
           paidAt: now,
         })),
       });
+      let creditAgreementId: string | null = null;
+      if (dto.credit && dto.customerId) {
+        const agreement = await tx.creditAgreement.create({
+          data: {
+            saleId: sale.id,
+            customerId: dto.customerId,
+            principal: balanceDue,
+            outstandingBalance: balanceDue,
+            dueDate: new Date(dto.credit.dueDate),
+            notes: dto.credit.notes,
+            installments: {
+              create: (
+                dto.credit.installments ?? [
+                  { dueDate: dto.credit.dueDate, amount: balanceDue },
+                ]
+              ).map((item, index) => ({
+                installmentNumber: index + 1,
+                amountDue: item.amount,
+                dueDate: new Date(item.dueDate),
+              })),
+            },
+          },
+        });
+        creditAgreementId = agreement.id;
+      }
       if (dto.customerId) {
         const points = Math.floor(total / 100);
         if (points > 0) {
@@ -341,6 +411,8 @@ export class SalesService {
         discountTotal,
         taxTotal,
         total,
+        balanceDue,
+        creditAgreementId,
         payments: dto.payments.map((payment) => ({
           method: payment.method,
           amount: payment.amount,

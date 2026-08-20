@@ -8,6 +8,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { BranchesModule } from './modules/branches/branches.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { CreditModule } from './modules/credit/credit.module';
 import { DiscountsModule } from './modules/discounts/discounts.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
@@ -34,6 +35,7 @@ import { UsersModule } from './modules/users/users.module';
     BranchesModule,
     CatalogModule,
     CustomersModule,
+    CreditModule,
     DiscountsModule,
     RolesModule,
     SalesModule,
