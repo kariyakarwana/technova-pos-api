@@ -289,7 +289,8 @@ export class NotificationsService {
     if (channel === NotificationChannel.WHATSAPP) {
       const token = this.config.getOrThrow<string>('WHATSAPP_ACCESS_TOKEN'),
         phoneId = this.config.getOrThrow<string>('WHATSAPP_PHONE_NUMBER_ID'),
-        apiVersion = this.config.get<string>('WHATSAPP_GRAPH_API_VERSION') ?? 'v23.0';
+        apiVersion =
+          this.config.get<string>('WHATSAPP_GRAPH_API_VERSION') ?? 'v23.0';
       const response = await fetch(
         `https://graph.facebook.com/${apiVersion}/${phoneId}/messages`,
         {

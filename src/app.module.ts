@@ -15,6 +15,7 @@ import { OrganizationsModule } from './modules/organizations/organizations.modul
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { ReturnsModule } from './modules/returns/returns.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
@@ -42,6 +43,7 @@ import { UsersModule } from './modules/users/users.module';
     DiscountsModule,
     RolesModule,
     ReturnsModule,
+    ReportsModule,
     SalesModule,
     SuppliersModule,
     PurchasingModule,

@@ -226,6 +226,8 @@ async function main() {
     "RETURN_COMPLETED",
     "CREDIT_PAYMENT_RECEIVED",
     "WARRANTY_POLICY_CREATED",
+    "CREDIT_PAYMENT_REMINDER",
+    "LOW_STOCK_ALERT",
   ];
 
   for (const eventType of whatsappEvents) {
