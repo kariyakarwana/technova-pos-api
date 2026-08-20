@@ -13,6 +13,7 @@ import { DiscountsModule } from './modules/discounts/discounts.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { OfflineSyncModule } from './modules/offline-sync/offline-sync.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { ReturnsModule } from './modules/returns/returns.module';
 import { ReportsModule } from './modules/reports/reports.module';
@@ -36,6 +37,7 @@ import { UsersModule } from './modules/users/users.module';
     AuthModule,
     OrganizationsModule,
     NotificationsModule,
+    OfflineSyncModule,
     BranchesModule,
     CatalogModule,
     CustomersModule,

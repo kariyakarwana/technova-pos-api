@@ -150,6 +150,20 @@ enum TransferStatus {
   CANCELLED
 }
 
+enum SyncBatchStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  PARTIALLY_FAILED
+  FAILED
+}
+
+enum SyncOperationStatus {
+  PENDING
+  APPLIED
+  REJECTED
+}
+
 model User {
   id            String     @id @default(cuid())
   email         String     @unique
@@ -181,6 +195,7 @@ model User {
   approvedPurchaseOrders  PurchaseOrder[]    @relation("PurchaseOrderApprover")
   createdSales            Sale[]             @relation("SaleCreator")
   stockMovements          StockMovement[]
+  offlineSyncBatches      OfflineSyncBatch[]
 
   @@index([status])
   @@index([createdAt])
@@ -1173,4 +1188,42 @@ model IdempotencyKey {
 
   @@index([scope, expiresAt])
   @@map("idempotency_keys")
+}
+
+model OfflineSyncBatch {
+  id            String          @id @default(cuid())
+  userId        String
+  clientBatchId String          @unique
+  deviceId      String
+  status        SyncBatchStatus @default(RECEIVED)
+  receivedAt    DateTime        @default(now())
+  completedAt   DateTime?
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  operations OfflineSyncOperation[]
+
+  @@index([userId, receivedAt])
+  @@index([deviceId, receivedAt])
+  @@map("offline_sync_batches")
+}
+
+model OfflineSyncOperation {
+  id                String              @id @default(cuid())
+  batchId           String
+  clientOperationId String              @unique
+  operationType     String
+  payload           Json
+  clientTimestamp   DateTime
+  status            SyncOperationStatus @default(PENDING)
+  response          Json?
+  errorCode         String?
+  errorMessage      String?
+  processedAt       DateTime?
+  createdAt         DateTime            @default(now())
+
+  batch OfflineSyncBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, status])
+  @@index([clientTimestamp])
+  @@map("offline_sync_operations")
 }
