@@ -10,6 +10,8 @@ import { CatalogModule } from './modules/catalog/catalog.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { RolesModule } from './modules/roles/roles.module';
+import { PurchasingModule } from './modules/purchasing/purchasing.module';
+import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
@@ -27,6 +29,8 @@ import { UsersModule } from './modules/users/users.module';
     BranchesModule,
     CatalogModule,
     RolesModule,
+    SuppliersModule,
+    PurchasingModule,
     UsersModule,
     HealthModule,
   ],
