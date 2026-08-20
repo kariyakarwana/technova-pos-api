@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hash } from "bcryptjs";
-import { PrismaClient, UserStatus } from "@prisma/client";
+import { NotificationChannel, PrismaClient, UserStatus } from "@prisma/client";
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -212,6 +212,41 @@ async function main() {
     update: { isDefault: true },
     create: { userId: superAdmin.id, branchId: mainBranch.id, isDefault: true },
   });
+
+  const whatsappEvents = [
+    "PRODUCT_CREATED",
+    "PURCHASE_ORDER_CREATED",
+    "PURCHASE_ORDER_APPROVED",
+    "GOODS_RECEIPT_CREATED",
+    "INVENTORY_ADJUSTED",
+    "STOCK_TRANSFER_CREATED",
+    "STOCK_TRANSFER_DISPATCHED",
+    "STOCK_TRANSFER_RECEIVED",
+    "SALE_COMPLETED",
+    "RETURN_COMPLETED",
+    "CREDIT_PAYMENT_RECEIVED",
+    "WARRANTY_POLICY_CREATED",
+  ];
+
+  for (const eventType of whatsappEvents) {
+    await prisma.notificationTemplate.upsert({
+      where: {
+        organizationId_eventType_channel: {
+          organizationId: organization.id,
+          eventType,
+          channel: NotificationChannel.WHATSAPP,
+        },
+      },
+      update: {},
+      create: {
+        organizationId: organization.id,
+        eventType,
+        channel: NotificationChannel.WHATSAPP,
+        name: `${eventType} WhatsApp notification`,
+        bodyTemplate: "TechNova POS: {{eventType}} — {{payload}}",
+      },
+    });
+  }
 
   console.info(`Super Admin seeded: ${email}`);
 }

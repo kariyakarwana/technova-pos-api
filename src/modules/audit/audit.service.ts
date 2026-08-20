@@ -3,6 +3,7 @@ import { AuditOutcome, Prisma } from '@prisma/client';
 
 import type { SecurityRequestContext } from '../../common/security/request';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
 
 export interface AuditInput {
@@ -15,7 +16,10 @@ export interface AuditInput {
 
 @Injectable()
 export class AuditService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async record(input: AuditInput): Promise<void> {
     await this.prisma.auditEvent.create({
@@ -28,6 +32,11 @@ export class AuditService {
         metadata: input.metadata,
       },
     });
+    await this.notifications.publishFromAudit(
+      input.userId,
+      input.action,
+      input.metadata ?? {},
+    );
   }
 
   async recordFailure(input: Omit<AuditInput, 'outcome'>): Promise<void> {

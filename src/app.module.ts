@@ -12,6 +12,7 @@ import { CreditModule } from './modules/credit/credit.module';
 import { DiscountsModule } from './modules/discounts/discounts.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { ReturnsModule } from './modules/returns/returns.module';
 import { SalesModule } from './modules/sales/sales.module';
@@ -33,6 +34,7 @@ import { UsersModule } from './modules/users/users.module';
     AuditModule,
     AuthModule,
     OrganizationsModule,
+    NotificationsModule,
     BranchesModule,
     CatalogModule,
     CustomersModule,
