@@ -13,6 +13,7 @@ import { DiscountsModule } from './modules/discounts/discounts.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { RolesModule } from './modules/roles/roles.module';
+import { ReturnsModule } from './modules/returns/returns.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
@@ -38,6 +39,7 @@ import { UsersModule } from './modules/users/users.module';
     CreditModule,
     DiscountsModule,
     RolesModule,
+    ReturnsModule,
     SalesModule,
     SuppliersModule,
     PurchasingModule,
