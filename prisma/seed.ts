@@ -1,10 +1,7 @@
-
-
-
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hash } from "bcryptjs";
-import { PrismaClient, UserStatus } from "@prisma/client";
+import { NotificationChannel, PrismaClient, UserStatus } from "@prisma/client";
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -49,6 +46,24 @@ const permissions = [
     key: "settings:manage",
     description: "Manage system settings",
   },
+  { key: "settings:view", description: "View organization settings" },
+  { key: "branches:view", description: "View organization branches" },
+  { key: "branches:manage", description: "Create and update branches" },
+  { key: "products:view", description: "View products and categories" },
+  { key: "products:manage", description: "Manage products and categories" },
+  { key: "suppliers:view", description: "View suppliers" },
+  { key: "suppliers:manage", description: "Manage suppliers" },
+  { key: "purchases:view", description: "View purchase orders and receipts" },
+  { key: "inventory:view", description: "View inventory and stock movements" },
+  { key: "sales:view", description: "View sales transactions" },
+  { key: "customers:view", description: "View customers" },
+  { key: "customers:manage", description: "Manage customers and loyalty" },
+  { key: "discounts:manage", description: "Manage discount rules" },
+  { key: "returns:manage", description: "Manage returns and refunds" },
+  { key: "credit:manage", description: "Manage customer credit" },
+  { key: "warranties:manage", description: "Manage warranties" },
+  { key: "notifications:manage", description: "Manage notification delivery" },
+  { key: "reports:view", description: "View and export reports" },
 ];
 
 async function main() {
@@ -147,6 +162,93 @@ async function main() {
       roleId: superAdminRole.id,
     },
   });
+
+  const organization = await prisma.organization.upsert({
+    where: { registrationNumber: "TECHNOVA-DEMO" },
+    update: { name: "TechNova POS" },
+    create: {
+      name: "TechNova POS",
+      registrationNumber: "TECHNOVA-DEMO",
+      email,
+      branding: {
+        create: {
+          primaryColor: "#0D9488",
+          secondaryColor: "#115E59",
+        },
+      },
+    },
+  });
+
+  await prisma.organizationUser.upsert({
+    where: {
+      organizationId_userId: {
+        organizationId: organization.id,
+        userId: superAdmin.id,
+      },
+    },
+    update: {},
+    create: { organizationId: organization.id, userId: superAdmin.id },
+  });
+
+  const mainBranch = await prisma.branch.upsert({
+    where: {
+      organizationId_code: {
+        organizationId: organization.id,
+        code: "MAIN",
+      },
+    },
+    update: { name: "Main Branch" },
+    create: {
+      organizationId: organization.id,
+      code: "MAIN",
+      name: "Main Branch",
+    },
+  });
+
+  await prisma.userBranch.upsert({
+    where: {
+      userId_branchId: { userId: superAdmin.id, branchId: mainBranch.id },
+    },
+    update: { isDefault: true },
+    create: { userId: superAdmin.id, branchId: mainBranch.id, isDefault: true },
+  });
+
+  const whatsappEvents = [
+    "PRODUCT_CREATED",
+    "PURCHASE_ORDER_CREATED",
+    "PURCHASE_ORDER_APPROVED",
+    "GOODS_RECEIPT_CREATED",
+    "INVENTORY_ADJUSTED",
+    "STOCK_TRANSFER_CREATED",
+    "STOCK_TRANSFER_DISPATCHED",
+    "STOCK_TRANSFER_RECEIVED",
+    "SALE_COMPLETED",
+    "RETURN_COMPLETED",
+    "CREDIT_PAYMENT_RECEIVED",
+    "WARRANTY_POLICY_CREATED",
+    "CREDIT_PAYMENT_REMINDER",
+    "LOW_STOCK_ALERT",
+  ];
+
+  for (const eventType of whatsappEvents) {
+    await prisma.notificationTemplate.upsert({
+      where: {
+        organizationId_eventType_channel: {
+          organizationId: organization.id,
+          eventType,
+          channel: NotificationChannel.WHATSAPP,
+        },
+      },
+      update: {},
+      create: {
+        organizationId: organization.id,
+        eventType,
+        channel: NotificationChannel.WHATSAPP,
+        name: `${eventType} WhatsApp notification`,
+        bodyTemplate: "TechNova POS: {{eventType}} — {{payload}}",
+      },
+    });
+  }
 
   console.info(`Super Admin seeded: ${email}`);
 }
