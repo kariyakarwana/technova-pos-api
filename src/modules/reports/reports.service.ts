@@ -128,6 +128,14 @@ export class ReportsService {
       this.prisma.product.count({ where: { organizationId } }),
     ]);
     const number = (value: unknown) => Number(value ?? 0);
+    const country = (address: unknown): string => {
+      if (!address || typeof address !== 'object' || !('country' in address))
+        return '';
+      const value = (address as Record<string, unknown>).country;
+      return typeof value === 'string' || typeof value === 'number'
+        ? String(value)
+        : '';
+    };
     const change = (current: number, previous: number) => previous === 0 ? (current > 0 ? 100 : 0) : ((current - previous) / previous) * 100;
     const salesTotal = number(sales._sum.total), purchaseTotal = number(purchases._sum.total), returnsTotal = number(refunds._sum.total);
     const productStats = new Map<string, { id: string; name: string; price: number; quantity: number; revenue: number; cost: number; imageUrl: string }>();
@@ -189,7 +197,7 @@ export class ReportsService {
       topSellingProducts: [...productStats.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 5).map((row) => ({ ...row, imageUrl: row.imageUrl || imageFallback })),
       lowStockProducts: lowStock.slice(0, 5).map((row) => ({ id: `${row.branch}-${row.sku}`, name: row.product, sku: row.sku, quantity: row.quantity, imageUrl: imageFallback })),
       recentSales: saleRows.slice(0, 5).map((sale) => ({ id: sale.id, invoiceNumber: sale.invoiceNumber, name: sale.items[0]?.product.name ?? sale.invoiceNumber, category: sale.items[0]?.product.category?.name ?? 'Sale', total: number(sale.total), date: sale.createdAt, status: sale.status, imageUrl: sale.items[0]?.product.images[0]?.url ?? imageFallback })),
-      topCustomers: topCustomers.map((customer) => ({ id: customer.id, name: `${customer.firstName} ${customer.lastName ?? ''}`.trim(), country: typeof customer.address === 'object' && customer.address && 'country' in customer.address ? String((customer.address as Record<string, unknown>).country ?? '') : '', orderCount: customer.sales.length, spent: customer.sales.reduce((sum, sale) => sum + number(sale.total), 0), avatarUrl: '' })).filter((row) => row.orderCount > 0).sort((a, b) => b.spent - a.spent).slice(0, 5),
+      topCustomers: topCustomers.map((customer) => ({ id: customer.id, name: `${customer.firstName} ${customer.lastName ?? ''}`.trim(), country: country(customer.address), orderCount: customer.sales.length, spent: customer.sales.reduce((sum, sale) => sum + number(sale.total), 0), avatarUrl: '' })).filter((row) => row.orderCount > 0).sort((a, b) => b.spent - a.spent).slice(0, 5),
       categories: [...categoryStats.values()].sort((a, b) => b.salesCount - a.salesCount).slice(0, 5).map((row) => ({ ...row, percentage: totalCategorySales ? (row.salesCount / totalCategorySales) * 100 : 0 })),
       categorySummary: { totalCategories: categories.length, totalProducts: productCount },
       heatmap,
