@@ -59,4 +59,9 @@ export class NotificationsController {
   process() {
     return this.notifications.processPending();
   }
+  @Get('provider-status')
+  @RequirePermissions('notifications:manage')
+  providerStatus() {
+    return this.notifications.providerStatus();
+  }
 }

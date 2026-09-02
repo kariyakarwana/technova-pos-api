@@ -51,4 +51,20 @@ export class ReportsController {
     );
     return this.reports.salesCsv(u.id, q);
   }
+  @Get('inventory.csv') async inventoryCsv(@CurrentUser() u: AuthenticatedUser, @Query() q: ReportFilterDto, @Res({ passthrough: true }) response: Response) {
+    this.csvResponse(response, 'technova-inventory-report.csv');
+    return this.reports.inventoryCsv(u.id, q.branchId);
+  }
+  @Get('low-stock.csv') async lowStockCsv(@CurrentUser() u: AuthenticatedUser, @Query() q: ReportFilterDto, @Res({ passthrough: true }) response: Response) {
+    this.csvResponse(response, 'technova-low-stock-report.csv');
+    return this.reports.lowStockCsv(u.id, q.branchId);
+  }
+  @Get('credit-aging.csv') async creditCsv(@CurrentUser() u: AuthenticatedUser, @Res({ passthrough: true }) response: Response) {
+    this.csvResponse(response, 'technova-credit-aging-report.csv');
+    return this.reports.creditAgingCsv(u.id);
+  }
+  private csvResponse(response: Response, filename: string) {
+    response.type('text/csv');
+    response.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  }
 }

@@ -1,4 +1,4 @@
-import { PaymentMethod } from '@prisma/client';
+import { PaymentMethod, ReturnResolution } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
@@ -26,6 +26,7 @@ export class CreateReturnDto {
   @IsString() reason!: string;
   @IsOptional() @IsEnum(PaymentMethod) refundMethod?: PaymentMethod;
   @IsOptional() @IsString() refundReference?: string;
+  @IsOptional() @IsEnum(ReturnResolution) resolution?: ReturnResolution;
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })

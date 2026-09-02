@@ -47,6 +47,9 @@ export class PurchaseQueryDto extends PaginationDto {
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() supplierId?: string;
   @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsString() search?: string;
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
 }
 export class ReceiptItemDto {
   @IsString() purchaseOrderItemId!: string;

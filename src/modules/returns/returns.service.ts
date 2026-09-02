@@ -11,6 +11,7 @@ import {
   PaymentMethod,
   PaymentStatus,
   ReturnStatus,
+  ReturnResolution,
   SaleStatus,
   StockMovementType,
   WarrantyStatus,
@@ -53,6 +54,27 @@ export class ReturnsService {
       this.prisma.return.count({ where }),
     ]);
     return paginate(data, total, q);
+  }
+  async summary(userId: string) {
+    const organizationId = await this.org(userId);
+    const where = { sale: { branch: { organizationId } } };
+    const [totals, byResolution, byReason, damagedItems, completedSales] =
+      await Promise.all([
+        this.prisma.return.aggregate({ where, _count: true, _sum: { total: true } }),
+        this.prisma.return.groupBy({ by: ['resolution'], where, _count: true, _sum: { total: true } }),
+        this.prisma.return.groupBy({ by: ['reason'], where, _count: true, orderBy: { _count: { reason: 'desc' } }, take: 10 }),
+        this.prisma.returnItem.count({ where: { return: where, condition: { contains: 'DAMAGED', mode: 'insensitive' } } }),
+        this.prisma.sale.count({ where: { branch: { organizationId }, status: { in: [SaleStatus.COMPLETED, SaleStatus.PARTIALLY_REFUNDED, SaleStatus.REFUNDED] } } }),
+      ]);
+    const returnCount = totals._count;
+    return {
+      totalAmount: Number(totals._sum.total ?? 0),
+      returnCount,
+      returnRate: completedSales ? (returnCount / completedSales) * 100 : 0,
+      damagedItems,
+      byResolution: byResolution.map((item) => ({ resolution: item.resolution, count: item._count, amount: Number(item._sum.total ?? 0) })),
+      byReason: byReason.map((item) => ({ reason: item.reason, count: item._count })),
+    };
   }
   async detail(userId: string, id: string) {
     const organizationId = await this.org(userId);
@@ -139,7 +161,10 @@ export class ReturnsService {
     const total = prepared.reduce((s, r) => s + r.refund, 0),
       creditOffset = Math.min(total, Number(sale.balanceDue)),
       cashRefund = total - creditOffset;
-    if (cashRefund > 0 && !dto.refundMethod)
+    const resolution = dto.resolution ?? ReturnResolution.ORIGINAL_METHOD;
+    if (resolution !== ReturnResolution.ORIGINAL_METHOD && !sale.customerId)
+      throw new BadRequestException('Store credit, points and exchanges require a registered customer.');
+    if (cashRefund > 0 && resolution === ReturnResolution.ORIGINAL_METHOD && !dto.refundMethod)
       throw new BadRequestException(
         'A refund method is required for the refundable paid amount.',
       );
@@ -147,7 +172,7 @@ export class ReturnsService {
       throw new BadRequestException('Credit is not a refund payment method.');
     const result = await this.prisma.$transaction(async (tx) => {
       let refundPaymentId: string | undefined;
-      if (cashRefund > 0) {
+      if (cashRefund > 0 && resolution === ReturnResolution.ORIGINAL_METHOD) {
         const payment = await tx.payment.create({
           data: {
             saleId: sale.id,
@@ -168,9 +193,25 @@ export class ReturnsService {
           status: ReturnStatus.COMPLETED,
           reason: dto.reason,
           total,
+          resolution,
+          storeCreditAmount: resolution === ReturnResolution.STORE_CREDIT || resolution === ReturnResolution.PRODUCT_EXCHANGE ? cashRefund : 0,
+          loyaltyPointsAwarded: resolution === ReturnResolution.LOYALTY_POINTS ? Math.floor(cashRefund / 100) : 0,
           completedAt: new Date(),
         },
       });
+      if ((resolution === ReturnResolution.STORE_CREDIT || resolution === ReturnResolution.PRODUCT_EXCHANGE) && cashRefund > 0) {
+        const account = await tx.storeCreditAccount.upsert({
+          where: { customerId: sale.customerId! },
+          create: { customerId: sale.customerId!, balance: cashRefund },
+          update: { balance: { increment: cashRefund } },
+        });
+        await tx.storeCreditTransaction.create({ data: { storeCreditAccountId: account.id, amount: cashRefund, reason: resolution === ReturnResolution.PRODUCT_EXCHANGE ? 'PRODUCT_EXCHANGE' : 'RETURN_STORE_CREDIT', referenceType: 'RETURN', referenceId: record.id } });
+      }
+      if (resolution === ReturnResolution.LOYALTY_POINTS && cashRefund > 0) {
+        const points = Math.floor(cashRefund / 100);
+        const account = await tx.loyaltyAccount.upsert({ where: { customerId: sale.customerId! }, create: { customerId: sale.customerId!, points }, update: { points: { increment: points } } });
+        await tx.loyaltyTransaction.create({ data: { loyaltyAccountId: account.id, points, reason: 'RETURN_REFUND', referenceType: 'RETURN', referenceId: record.id } });
+      }
       for (const row of prepared) {
         await tx.returnItem.create({
           data: {

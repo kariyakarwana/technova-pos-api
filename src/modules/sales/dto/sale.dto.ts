@@ -62,7 +62,18 @@ export class CreateSaleDto {
   @Type(() => CreditTermsDto)
   credit?: CreditTermsDto;
 }
+export class SaleQuoteDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => SaleItemDto)
+  items!: SaleItemDto[];
+}
 export class SaleQueryDto extends PaginationDto {
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() customerId?: string;
+  @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsString() search?: string;
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
 }

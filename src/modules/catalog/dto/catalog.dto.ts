@@ -1,11 +1,14 @@
 import { RecordStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsEnum,
   IsNumber,
   IsOptional,
   IsString,
+  IsUrl,
   Length,
   MaxLength,
   Min,
@@ -58,6 +61,7 @@ export class CreateProductDto {
   @IsNumber({ maxDecimalPlaces: 3 })
   @Min(0)
   reorderLevel?: number;
+  @IsOptional() @IsArray() @ArrayMaxSize(8) @IsUrl({}, { each: true }) imageUrls?: string[];
 }
 export class UpdateProductDto {
   @IsOptional() @IsString() @MaxLength(120) barcode?: string;
@@ -87,6 +91,7 @@ export class UpdateProductDto {
   @Min(0)
   reorderLevel?: number;
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
+  @IsOptional() @IsArray() @ArrayMaxSize(8) @IsUrl({}, { each: true }) imageUrls?: string[];
 }
 export class ProductQueryDto extends PaginationDto {
   @IsOptional() @IsString() search?: string;

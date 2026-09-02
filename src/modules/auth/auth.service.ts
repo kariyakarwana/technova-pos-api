@@ -529,4 +529,23 @@ export class AuthService {
       this.config.getOrThrow<string>('GOOGLE_CALLBACK_URL')
     );
   }
+
+  sessions(userId: string) {
+    return this.repository.listActiveSessions(userId);
+  }
+
+  async revokeSession(userId: string, sessionId: string) {
+    const result = await this.repository.revokeSession(userId, sessionId);
+    if (!result.count) throw new UnauthorizedException('Session is unavailable.');
+    return { revoked: true };
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const user = await this.repository.findUserById(userId);
+    if (!user?.passwordHash || !(await verifyPassword(currentPassword, user.passwordHash))) throw new UnauthorizedException('Current password is incorrect.');
+    const validation = validatePasswordStrength(newPassword);
+    if (!validation.valid) throw new ForbiddenException(validation.errors.join(' '));
+    await this.repository.changePassword(userId, await hashPassword(newPassword));
+    return { changed: true };
+  }
 }

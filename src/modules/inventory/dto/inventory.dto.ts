@@ -46,4 +46,5 @@ export class DispatchTransferDto {
 export class InventoryQueryDto extends PaginationDto {
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() productId?: string;
+  @IsOptional() @IsString() search?: string;
 }

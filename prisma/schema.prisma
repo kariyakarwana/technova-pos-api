@@ -79,6 +79,7 @@ enum PaymentMethod {
   MOBILE_WALLET
   CREDIT
   OTHER
+  STORE_CREDIT
 }
 
 enum PaymentStatus {
@@ -140,6 +141,13 @@ enum ReturnStatus {
   COMPLETED
   REJECTED
   CANCELLED
+}
+
+enum ReturnResolution {
+  ORIGINAL_METHOD
+  STORE_CREDIT
+  LOYALTY_POINTS
+  PRODUCT_EXCHANGE
 }
 
 enum TransferStatus {
@@ -557,11 +565,25 @@ model Product {
   warrantyPolicies   WarrantyPolicy[]
   stockMovements     StockMovement[]
   stockTransferItems StockTransferItem[]
+  images             ProductImage[]
 
   @@unique([organizationId, sku])
   @@unique([organizationId, barcode])
   @@index([organizationId, status])
   @@map("products")
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  url       String   @db.VarChar(2000)
+  altText   String?  @db.VarChar(240)
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+  @@map("product_images")
 }
 
 model Supplier {
@@ -776,10 +798,36 @@ model Customer {
   creditAgreements        CreditAgreement[]
   warranties              Warranty[]
   notificationPreferences NotificationPreference[]
+  storeCreditAccount      StoreCreditAccount?
 
   @@unique([organizationId, customerNumber])
   @@index([organizationId, phone])
   @@map("customers")
+}
+
+model StoreCreditAccount {
+  id           String                   @id @default(cuid())
+  customerId   String                   @unique
+  balance      Decimal                  @default(0) @db.Decimal(18, 2)
+  updatedAt    DateTime                 @updatedAt
+  customer     Customer                 @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  transactions StoreCreditTransaction[]
+
+  @@map("store_credit_accounts")
+}
+
+model StoreCreditTransaction {
+  id                   String             @id @default(cuid())
+  storeCreditAccountId String
+  amount               Decimal            @db.Decimal(18, 2)
+  reason               String
+  referenceType        String?
+  referenceId          String?
+  createdAt            DateTime           @default(now())
+  account              StoreCreditAccount @relation(fields: [storeCreditAccountId], references: [id], onDelete: Cascade)
+
+  @@index([storeCreditAccountId, createdAt])
+  @@map("store_credit_transactions")
 }
 
 model LoyaltyAccount {
@@ -934,6 +982,9 @@ model Return {
   status          ReturnStatus @default(REQUESTED)
   reason          String
   total           Decimal      @default(0) @db.Decimal(18, 2)
+  resolution      ReturnResolution @default(ORIGINAL_METHOD)
+  storeCreditAmount Decimal    @default(0) @db.Decimal(18, 2)
+  loyaltyPointsAwarded Int     @default(0)
   completedAt     DateTime?
   createdAt       DateTime     @default(now())
   sale            Sale         @relation(fields: [saleId], references: [id])

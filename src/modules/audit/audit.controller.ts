@@ -2,7 +2,7 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { RequirePermissions } from '../../common/auth/permissions.decorator';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
-import { PaginationDto } from '../../common/dto/pagination.dto';
+import { AuditQueryDto } from './audit.dto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { AuditService } from './audit.service';
@@ -12,7 +12,7 @@ export class AuditController {
   constructor(private readonly audit: AuditService) {}
   @Get() @RequirePermissions('audit:view') list(
     @CurrentUser() user: AuthenticatedUser,
-    @Query() query: PaginationDto,
+    @Query() query: AuditQueryDto,
   ) {
     return this.audit.listForUser(user.id, query);
   }

@@ -4,7 +4,8 @@ import { AuditOutcome, Prisma } from '@prisma/client';
 import type { SecurityRequestContext } from '../../common/security/request';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
+import { paginate } from '../../common/dto/pagination.dto';
+import { AuditQueryDto } from './audit.dto';
 
 export interface AuditInput {
   userId?: string;
@@ -43,12 +44,12 @@ export class AuditService {
     await this.record({ ...input, outcome: AuditOutcome.FAILURE });
   }
 
-  async listForUser(userId: string, query: PaginationDto) {
+  async listForUser(userId: string, query: AuditQueryDto) {
     const membership = await this.prisma.organizationUser.findFirst({
       where: { userId },
       select: { organizationId: true },
     });
-    const where = membership
+    const scope: Prisma.AuditEventWhereInput = membership
       ? {
           user: {
             organizationMemberships: {
@@ -57,6 +58,17 @@ export class AuditService {
           },
         }
       : { userId };
+    const where: Prisma.AuditEventWhereInput = {
+      AND: [scope],
+      action: query.action || undefined,
+      outcome: query.outcome,
+      createdAt: query.from || query.to ? { gte: query.from ? new Date(query.from) : undefined, lte: query.to ? new Date(query.to) : undefined } : undefined,
+      OR: query.search ? [
+        { action: { contains: query.search, mode: 'insensitive' } },
+        { user: { email: { contains: query.search, mode: 'insensitive' } } },
+        { user: { name: { contains: query.search, mode: 'insensitive' } } },
+      ] : undefined,
+    };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.auditEvent.findMany({
         where,

@@ -5,6 +5,7 @@ import {
   Param,
   Post,
   Req,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -16,6 +17,7 @@ import { PermissionsGuard } from '../../common/auth/permissions.guard';
 import { getSecurityRequestContext } from '../../common/security/request';
 import { OfflineSyncBatchDto } from './dto/offline-sync.dto';
 import { OfflineSyncService } from './offline-sync.service';
+import { PaginationDto } from '../../common/dto/pagination.dto';
 @Controller('offline-sync')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermissions('sales:manage')
@@ -39,5 +41,12 @@ export class OfflineSyncController {
     @Param('clientBatchId') id: string,
   ) {
     return this.sync.byClientId(u.id, id);
+  }
+
+  @Get('batches') list(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query() query: PaginationDto,
+  ) {
+    return this.sync.list(u.id, query);
   }
 }

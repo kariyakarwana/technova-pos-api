@@ -40,4 +40,5 @@ export class UpdateCustomerDto {
 }
 export class CustomerQueryDto extends PaginationDto {
   @IsOptional() @IsString() search?: string;
+  @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
 }

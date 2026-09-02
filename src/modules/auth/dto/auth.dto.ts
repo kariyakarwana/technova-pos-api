@@ -38,3 +38,8 @@ export class VerifyEmailDto {
   @MinLength(20)
   token!: string;
 }
+
+export class ChangePasswordDto {
+  @IsString() @MinLength(1) currentPassword!: string;
+  @IsString() @MinLength(12) @MaxLength(128) newPassword!: string;
+}

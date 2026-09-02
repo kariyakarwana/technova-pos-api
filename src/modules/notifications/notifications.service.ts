@@ -232,6 +232,32 @@ export class NotificationsService {
     }
     return { processed: rows.length };
   }
+  providerStatus() {
+    const provider = (
+      this.config.get<string>('WHATSAPP_PROVIDER') ?? 'meta'
+    ).toLowerCase();
+    const configured =
+      provider === 'whatchimp'
+        ? Boolean(
+            this.config.get('WHATCHIMP_API_TOKEN') &&
+              this.config.get('WHATCHIMP_PHONE_NUMBER_ID') &&
+              this.config.get('WHATCHIMP_TEMPLATE_NAME'),
+          )
+        : Boolean(
+            this.config.get('WHATSAPP_ACCESS_TOKEN') &&
+              this.config.get('WHATSAPP_PHONE_NUMBER_ID'),
+          );
+    return {
+      provider,
+      configured,
+      workerEnabled:
+        this.config.get<string>('NOTIFICATION_WORKER_ENABLED') === 'true',
+      templateName:
+        provider === 'whatchimp'
+          ? this.config.get<string>('WHATCHIMP_TEMPLATE_NAME') ?? null
+          : null,
+    };
+  }
   async webhook(
     provider: string,
     providerEventId: string,
@@ -287,6 +313,11 @@ export class NotificationsService {
       return result.messageId;
     }
     if (channel === NotificationChannel.WHATSAPP) {
+      const provider = (
+        this.config.get<string>('WHATSAPP_PROVIDER') ?? 'meta'
+      ).toLowerCase();
+      if (provider === 'whatchimp')
+        return this.deliverWithWhatChimp(to, body);
       const token = this.config.getOrThrow<string>('WHATSAPP_ACCESS_TOKEN'),
         phoneId = this.config.getOrThrow<string>('WHATSAPP_PHONE_NUMBER_ID'),
         apiVersion =
@@ -319,6 +350,46 @@ export class NotificationsService {
     throw new BadRequestException(
       `Delivery channel ${channel} is not configured.`,
     );
+  }
+  private async deliverWithWhatChimp(to: string, body: string) {
+    const apiToken = this.config.getOrThrow<string>('WHATCHIMP_API_TOKEN');
+    const phoneNumberId = this.config.getOrThrow<string>(
+      'WHATCHIMP_PHONE_NUMBER_ID',
+    );
+    const templateName = this.config.getOrThrow<string>(
+      'WHATCHIMP_TEMPLATE_NAME',
+    );
+    const languageCode =
+      this.config.get<string>('WHATCHIMP_LANGUAGE_CODE') ?? 'en_US';
+    const baseUrl =
+      this.config.get<string>('WHATCHIMP_API_BASE_URL') ??
+      'https://app.whatchimp.com/api/v1';
+    const phoneNumber = to.replace(/\D/g, '');
+    if (!phoneNumber)
+      throw new BadRequestException('WhatsApp recipient is invalid.');
+    const form = new URLSearchParams({
+      apiToken,
+      phone_number_id: phoneNumberId,
+      phone_number: phoneNumber,
+      template_name: templateName,
+      language_code: languageCode,
+      variable1: body.slice(0, 1024),
+    });
+    const response = await fetch(`${baseUrl}/whatsapp/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form,
+    });
+    const result = (await response.json().catch(() => null)) as {
+      status?: string | number;
+      wa_message_id?: string;
+      message?: string;
+    } | null;
+    if (!response.ok || String(result?.status) !== '1')
+      throw new BadRequestException(
+        result?.message ?? `WhatChimp delivery failed (${response.status}).`,
+      );
+    return result?.wa_message_id ?? 'accepted';
   }
   private render(
     template: string,

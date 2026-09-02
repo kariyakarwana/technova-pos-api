@@ -39,6 +39,25 @@ export class AuthRepository {
     });
   }
 
+  listActiveSessions(userId: string) {
+    return this.prisma.refreshSession.findMany({
+      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { id: true, userAgent: true, ipHash: true, createdAt: true, lastUsedAt: true, expiresAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  revokeSession(userId: string, id: string) {
+    return this.prisma.refreshSession.updateMany({ where: { id, userId, revokedAt: null }, data: { revokedAt: new Date(), revokeReason: 'USER_REVOKED' } });
+  }
+
+  async changePassword(userId: string, passwordHash: string) {
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: userId }, data: { passwordHash, passwordChangedAt: new Date(), sessionVersion: { increment: 1 } } }),
+      this.prisma.refreshSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date(), revokeReason: 'PASSWORD_CHANGED' } }),
+    ]);
+  }
+
   findRefreshSession(tokenHash: string) {
     return this.prisma.refreshSession.findUnique({
       where: { tokenHash },

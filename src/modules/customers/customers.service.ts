@@ -31,6 +31,7 @@ export class CustomersService {
     const organizationId = await this.org(userId);
     const where: Prisma.CustomerWhereInput = {
       organizationId,
+      status: q.status,
       OR: q.search
         ? [
             { customerNumber: { contains: q.search, mode: 'insensitive' } },
@@ -45,7 +46,7 @@ export class CustomersService {
         where,
         skip: q.skip,
         take: q.pageSize,
-        include: { loyaltyAccount: true },
+        include: { loyaltyAccount: true, storeCreditAccount: true },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.customer.count({ where }),
@@ -61,6 +62,9 @@ export class CustomersService {
           include: {
             transactions: { take: 20, orderBy: { createdAt: 'desc' } },
           },
+        },
+        storeCreditAccount: {
+          include: { transactions: { take: 20, orderBy: { createdAt: 'desc' } } },
         },
         creditAgreements: { orderBy: { createdAt: 'desc' }, take: 20 },
         warranties: { orderBy: { createdAt: 'desc' }, take: 20 },
@@ -84,7 +88,7 @@ export class CustomersService {
           address: dto.address,
           loyaltyAccount: { create: {} },
         },
-        include: { loyaltyAccount: true },
+        include: { loyaltyAccount: true, storeCreditAccount: true },
       });
       await this.audit.record({
         userId: actor.id,

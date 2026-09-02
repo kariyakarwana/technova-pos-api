@@ -27,6 +27,11 @@ export class ReturnsController {
   ) {
     return this.returns.list(u.id, q);
   }
+  @Get('summary') @RequirePermissions('sales:view') summary(
+    @CurrentUser() u: AuthenticatedUser,
+  ) {
+    return this.returns.summary(u.id);
+  }
   @Get(':id') @RequirePermissions('sales:view') detail(
     @CurrentUser() u: AuthenticatedUser,
     @Param('id') id: string,

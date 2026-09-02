@@ -59,4 +59,13 @@ export class PurchasingController {
   ) {
     return this.purchasing.receive(u, id, d, getSecurityRequestContext(r));
   }
+  @Post('orders/:id/receipts/:receiptId/reissue-labels')
+  @RequirePermissions('purchases:manage')
+  reissueLabels(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('receiptId') receiptId: string,
+  ) {
+    return this.purchasing.reissueReceiptLabels(u.id, id, receiptId);
+  }
 }

@@ -52,6 +52,24 @@ export class InventoryController {
   ) {
     return this.inventory.createTransfer(u, d, getSecurityRequestContext(r));
   }
+  @Get('transfers') @RequirePermissions('inventory:view') transfers(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query() q: InventoryQueryDto,
+  ) {
+    return this.inventory.transfers(u.id, q);
+  }
+  @Get('units') @RequirePermissions('inventory:view') units(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query() q: InventoryQueryDto,
+  ) {
+    return this.inventory.units(u.id, q);
+  }
+  @Get('units/:id') @RequirePermissions('inventory:view') unit(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.inventory.unit(u.id, id);
+  }
   @Get('transfers/:id') @RequirePermissions('inventory:view') transfer(
     @CurrentUser() u: AuthenticatedUser,
     @Param('id') id: string,

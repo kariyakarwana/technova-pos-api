@@ -68,6 +68,15 @@ export class SuppliersService {
       throw error;
     }
   }
+  async detail(userId: string, id: string) {
+    const organizationId = await this.organizationId(userId);
+    const supplier = await this.prisma.supplier.findFirst({
+      where: { id, organizationId },
+      include: { purchaseOrders: { orderBy: { createdAt: 'desc' }, take: 20 } },
+    });
+    if (!supplier) throw new NotFoundException('Supplier not found.');
+    return supplier;
+  }
   async update(
     actor: AuthenticatedUser,
     id: string,
