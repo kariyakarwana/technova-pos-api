@@ -36,6 +36,7 @@ export class ReportsService {
       saleWhere = {
         branch: { organizationId },
         branchId: q.branchId,
+        createdById: q.cashierId,
         status: {
           in: [
             SaleStatus.COMPLETED,
@@ -218,6 +219,7 @@ export class ReportsService {
           select: { customerNumber: true, firstName: true, lastName: true },
         },
         payments: { where: { status: PaymentStatus.COMPLETED } },
+        createdBy: { select: { id: true, email: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -228,6 +230,7 @@ export class ReportsService {
       customer: row.customer
         ? `${row.customer.firstName} ${row.customer.lastName ?? ''}`.trim()
         : 'Walk-in',
+      cashier: row.createdBy.email,
       subtotal: Number(row.subtotal),
       discount: Number(row.discountTotal),
       tax: Number(row.taxTotal),
@@ -316,6 +319,7 @@ export class ReportsService {
         'Date',
         'Branch',
         'Customer',
+        'Cashier',
         'Subtotal',
         'Discount',
         'Tax',
@@ -330,6 +334,7 @@ export class ReportsService {
       row.date.toISOString(),
       row.branch,
       row.customer,
+      row.cashier,
       row.subtotal,
       row.discount,
       row.tax,

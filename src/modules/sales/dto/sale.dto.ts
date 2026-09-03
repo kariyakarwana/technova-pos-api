@@ -72,6 +72,7 @@ export class SaleQuoteDto {
 export class SaleQueryDto extends PaginationDto {
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() customerId?: string;
+  @IsOptional() @IsString() cashierId?: string;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsString() search?: string;
   @IsOptional() @IsDateString() from?: string;

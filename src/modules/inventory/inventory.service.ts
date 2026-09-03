@@ -217,9 +217,10 @@ export class InventoryService {
     const organizationId = await this.organizationId(userId);
     const where = {
       sourceBranch: { organizationId },
-      OR: q.branchId
-        ? [{ sourceBranchId: q.branchId }, { destinationBranchId: q.branchId }]
-        : undefined,
+      status: q.status,
+      ...(q.branchId && q.direction === 'OUTGOING' ? { sourceBranchId: q.branchId } : {}),
+      ...(q.branchId && q.direction === 'INCOMING' ? { destinationBranchId: q.branchId } : {}),
+      OR: q.branchId && (!q.direction || q.direction === 'ALL') ? [{ sourceBranchId: q.branchId }, { destinationBranchId: q.branchId }] : undefined,
     };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.stockTransfer.findMany({ where, skip: q.skip, take: q.pageSize, include: { sourceBranch: true, destinationBranch: true, _count: { select: { items: true } } }, orderBy: { createdAt: 'desc' } }),
@@ -312,6 +313,7 @@ export class InventoryService {
                 userId: actor.id,
                 type: StockMovementType.TRANSFER_OUT,
                 quantity: 1,
+                reason: transfer.notes,
                 referenceType: 'STOCK_TRANSFER',
                 referenceId: id,
               },
@@ -325,6 +327,7 @@ export class InventoryService {
               userId: actor.id,
               type: StockMovementType.TRANSFER_OUT,
               quantity,
+              reason: transfer.notes,
               referenceType: 'STOCK_TRANSFER',
               referenceId: id,
             },
@@ -394,6 +397,7 @@ export class InventoryService {
                 userId: actor.id,
                 type: StockMovementType.TRANSFER_IN,
                 quantity: 1,
+                reason: transfer.notes,
                 referenceType: 'STOCK_TRANSFER',
                 referenceId: id,
               },
@@ -407,6 +411,7 @@ export class InventoryService {
               userId: actor.id,
               type: StockMovementType.TRANSFER_IN,
               quantity,
+              reason: transfer.notes,
               referenceType: 'STOCK_TRANSFER',
               referenceId: id,
             },

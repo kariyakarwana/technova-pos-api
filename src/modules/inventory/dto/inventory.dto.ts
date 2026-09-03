@@ -5,9 +5,12 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsIn,
+  IsEnum,
   Min,
   ValidateNested,
 } from 'class-validator';
+import { TransferStatus } from '@prisma/client';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 export class AdjustmentDto {
   @IsString() branchId!: string;
@@ -47,4 +50,6 @@ export class InventoryQueryDto extends PaginationDto {
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() productId?: string;
   @IsOptional() @IsString() search?: string;
+  @IsOptional() @IsEnum(TransferStatus) status?: TransferStatus;
+  @IsOptional() @IsIn(['INCOMING', 'OUTGOING', 'ALL']) direction?: 'INCOMING' | 'OUTGOING' | 'ALL';
 }

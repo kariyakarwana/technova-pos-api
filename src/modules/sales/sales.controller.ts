@@ -33,6 +33,11 @@ export class SalesController {
   ) {
     return this.sales.posContext(u, branchId);
   }
+  @Get('cashiers') @RequirePermissions('sales:view') cashiers(
+    @CurrentUser() u: AuthenticatedUser,
+  ) {
+    return this.sales.cashiers(u.id);
+  }
   @Get(':id') @RequirePermissions('sales:view') detail(
     @CurrentUser() u: AuthenticatedUser,
     @Param('id') id: string,

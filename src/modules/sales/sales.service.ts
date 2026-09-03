@@ -41,6 +41,7 @@ export class SalesService {
       branch: { organizationId },
       branchId: q.branchId,
       customerId: q.customerId,
+      createdById: q.cashierId,
       status: q.status as SaleStatus | undefined,
       createdAt: q.from || q.to ? { gte: q.from ? new Date(q.from) : undefined, lte: q.to ? new Date(q.to) : undefined } : undefined,
       OR: q.search ? [
@@ -65,12 +66,24 @@ export class SalesService {
             },
           },
           branch: { select: { code: true, name: true } },
+          createdBy: { select: { id: true, email: true } },
           _count: { select: { items: true, payments: true } },
         },
       }),
       this.prisma.sale.count({ where }),
     ]);
     return paginate(data, total, q);
+  }
+  async cashiers(userId: string) {
+    const organizationId = await this.org(userId);
+    return this.prisma.user.findMany({
+      where: {
+        organizationMemberships: { some: { organizationId } },
+        createdSales: { some: { branch: { organizationId } } },
+      },
+      select: { id: true, email: true },
+      orderBy: { email: 'asc' },
+    });
   }
   async posContext(actor: AuthenticatedUser, branchId: string) {
     if (!branchId) throw new BadRequestException('branchId is required.');
