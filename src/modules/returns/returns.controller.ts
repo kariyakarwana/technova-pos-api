@@ -9,6 +9,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import type { Response } from 'express';
+import { Res } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
@@ -31,6 +33,20 @@ export class ReturnsController {
     @CurrentUser() u: AuthenticatedUser,
   ) {
     return this.returns.summary(u.id);
+  }
+  @Get('history.csv')
+  @RequirePermissions('sales:view')
+  async historyCsv(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query() q: ReturnQueryDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.type('text/csv');
+    response.setHeader(
+      'Content-Disposition',
+      'attachment; filename="technova-return-history.csv"',
+    );
+    return this.returns.historyCsv(u.id, q);
   }
   @Get(':id') @RequirePermissions('sales:view') detail(
     @CurrentUser() u: AuthenticatedUser,

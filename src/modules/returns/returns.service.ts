@@ -12,6 +12,7 @@ import {
   PaymentStatus,
   ReturnStatus,
   ReturnResolution,
+  Prisma,
   SaleStatus,
   StockMovementType,
   WarrantyStatus,
@@ -38,7 +39,7 @@ export class ReturnsService {
   }
   async list(userId: string, q: ReturnQueryDto) {
     const organizationId = await this.org(userId);
-    const where = { sale: { branch: { organizationId } }, saleId: q.saleId };
+    const where = this.historyWhere(organizationId, q);
     const [data, total] = await this.prisma.$transaction([
       this.prisma.return.findMany({
         where,
@@ -46,7 +47,20 @@ export class ReturnsService {
         take: q.pageSize,
         orderBy: { createdAt: 'desc' },
         include: {
-          sale: { select: { invoiceNumber: true } },
+          sale: {
+            select: {
+              invoiceNumber: true,
+              customer: {
+                select: {
+                  customerNumber: true,
+                  firstName: true,
+                  lastName: true,
+                  phone: true,
+                },
+              },
+              branch: { select: { code: true, name: true } },
+            },
+          },
           items: true,
           refundPayment: true,
         },
@@ -54,6 +68,87 @@ export class ReturnsService {
       this.prisma.return.count({ where }),
     ]);
     return paginate(data, total, q);
+  }
+  async historyCsv(userId: string, q: ReturnQueryDto) {
+    const organizationId = await this.org(userId);
+    const rows = await this.prisma.return.findMany({
+      where: this.historyWhere(organizationId, q),
+      include: {
+        sale: { include: { customer: true, branch: true } },
+        items: true,
+        refundPayment: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const values = rows.map((row) => [
+      row.returnNumber,
+      row.sale.invoiceNumber,
+      row.createdAt.toISOString(),
+      row.sale.branch.name,
+      row.sale.customer
+        ? `${row.sale.customer.firstName} ${row.sale.customer.lastName ?? ''}`.trim()
+        : 'Walk-in',
+      row.sale.customer?.phone ?? '',
+      row.reason,
+      [...new Set(row.items.map((item) => item.condition ?? ''))].join(', '),
+      row.resolution,
+      Number(row.total),
+      row.refundPayment?.method ?? '',
+      row.status,
+    ]);
+    return [
+      ['Return', 'Invoice', 'Date', 'Branch', 'Customer', 'Phone', 'Reason', 'Condition', 'Resolution', 'Amount', 'Refund Method', 'Status'],
+      ...values,
+    ].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\r\n');
+  }
+  private historyWhere(
+    organizationId: string,
+    q: ReturnQueryDto,
+  ): Prisma.ReturnWhereInput {
+    return {
+      saleId: q.saleId,
+      status: q.status,
+      resolution: q.resolution,
+      createdAt:
+        q.from || q.to
+          ? {
+              gte: q.from ? new Date(q.from) : undefined,
+              lte: q.to ? new Date(q.to) : undefined,
+            }
+          : undefined,
+      sale: {
+        branch: { organizationId },
+        branchId: q.branchId,
+        customer: q.customerPhone
+          ? { phone: { contains: q.customerPhone } }
+          : undefined,
+      },
+      OR: q.search
+        ? [
+            { returnNumber: { contains: q.search, mode: 'insensitive' } },
+            { reason: { contains: q.search, mode: 'insensitive' } },
+            {
+              sale: {
+                invoiceNumber: { contains: q.search, mode: 'insensitive' },
+              },
+            },
+            {
+              sale: {
+                customer: {
+                  firstName: { contains: q.search, mode: 'insensitive' },
+                },
+              },
+            },
+            {
+              sale: {
+                customer: {
+                  lastName: { contains: q.search, mode: 'insensitive' },
+                },
+              },
+            },
+          ]
+        : undefined,
+    };
   }
   async summary(userId: string) {
     const organizationId = await this.org(userId);

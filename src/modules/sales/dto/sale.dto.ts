@@ -1,5 +1,5 @@
 import { PaymentMethod } from '@prisma/client';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
@@ -72,9 +72,13 @@ export class SaleQuoteDto {
 export class SaleQueryDto extends PaginationDto {
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() customerId?: string;
+  @IsOptional() @IsString() customerPhone?: string;
   @IsOptional() @IsString() cashierId?: string;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsString() search?: string;
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  eligibleForReturn?: boolean;
   @IsOptional() @IsDateString() from?: string;
   @IsOptional() @IsDateString() to?: string;
 }

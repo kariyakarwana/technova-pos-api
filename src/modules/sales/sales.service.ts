@@ -41,8 +41,13 @@ export class SalesService {
       branch: { organizationId },
       branchId: q.branchId,
       customerId: q.customerId,
+      customer: q.customerPhone
+        ? { phone: { contains: q.customerPhone } }
+        : undefined,
       createdById: q.cashierId,
-      status: q.status as SaleStatus | undefined,
+      status: q.eligibleForReturn
+        ? { in: [SaleStatus.COMPLETED, SaleStatus.PARTIALLY_REFUNDED] }
+        : (q.status as SaleStatus | undefined),
       createdAt: q.from || q.to ? { gte: q.from ? new Date(q.from) : undefined, lte: q.to ? new Date(q.to) : undefined } : undefined,
       OR: q.search ? [
         { invoiceNumber: { contains: q.search, mode: 'insensitive' as const } },
@@ -83,6 +88,29 @@ export class SalesService {
       },
       select: { id: true, email: true },
       orderBy: { email: 'asc' },
+    });
+  }
+  async returnFilterOptions(userId: string, branchId?: string) {
+    const organizationId = await this.org(userId);
+    return this.prisma.customer.findMany({
+      where: {
+        organizationId,
+        sales: {
+          some: {
+            branchId,
+            status: {
+              in: [SaleStatus.COMPLETED, SaleStatus.PARTIALLY_REFUNDED],
+            },
+          },
+        },
+      },
+      select: {
+        id: true,
+        customerNumber: true,
+        firstName: true,
+        lastName: true,
+      },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
     });
   }
   async posContext(actor: AuthenticatedUser, branchId: string) {

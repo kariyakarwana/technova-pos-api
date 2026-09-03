@@ -38,6 +38,14 @@ export class SalesController {
   ) {
     return this.sales.cashiers(u.id);
   }
+  @Get('return-filter-options')
+  @RequirePermissions('sales:view')
+  returnFilterOptions(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.sales.returnFilterOptions(u.id, branchId);
+  }
   @Get(':id') @RequirePermissions('sales:view') detail(
     @CurrentUser() u: AuthenticatedUser,
     @Param('id') id: string,

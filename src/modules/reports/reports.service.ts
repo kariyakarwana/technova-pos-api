@@ -1,5 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { CreditStatus, PaymentStatus, SaleStatus } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { CreditStatus, PaymentStatus, PurchaseOrderStatus, RecordStatus, ReturnResolution, ReturnStatus, SaleStatus, StockMovementType, TransferStatus, UserStatus, WarrantyStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { ReportFilterDto } from './dto/report.dto';
 @Injectable()
@@ -20,6 +20,8 @@ export class ReportsService {
     return { from, to };
   }
   private async scope(userId: string, q: ReportFilterDto) {
+    if (q.minAmount !== undefined && q.maxAmount !== undefined && q.minAmount > q.maxAmount)
+      throw new BadRequestException('Minimum amount cannot be greater than maximum amount.');
     const organizationId = await this.org(userId);
     if (
       q.branchId &&
@@ -59,7 +61,7 @@ export class ReportsService {
         _sum: { total: true, paidTotal: true, balanceDue: true },
       }),
       this.prisma.customer.count({ where: { organizationId } }),
-      this.lowStock(userId, q.branchId),
+      this.lowStock(userId, q),
       this.prisma.creditAgreement.aggregate({
         where: {
           customer: { organizationId },
@@ -211,7 +213,16 @@ export class ReportsService {
       where: {
         branch: { organizationId },
         branchId: q.branchId,
+        customerId: q.customerId,
+        createdById: q.cashierId,
+        status: q.status as SaleStatus | undefined,
+        total: q.minAmount !== undefined || q.maxAmount !== undefined ? { gte: q.minAmount, lte: q.maxAmount } : undefined,
         createdAt: { gte: from, lte: to },
+        OR: q.search ? [
+          { invoiceNumber: { contains: q.search, mode: 'insensitive' } },
+          { customer: { firstName: { contains: q.search, mode: 'insensitive' } } },
+          { customer: { lastName: { contains: q.search, mode: 'insensitive' } } },
+        ] : undefined,
       },
       include: {
         branch: { select: { code: true, name: true } },
@@ -241,10 +252,17 @@ export class ReportsService {
       paymentMethods: row.payments.map((p) => p.method).join(', '),
     }));
   }
-  async inventory(userId: string, branchId?: string) {
-    const organizationId = await this.scope(userId, { branchId });
+  async inventory(userId: string, q: ReportFilterDto = {}) {
+    const organizationId = await this.scope(userId, q);
     const rows = await this.prisma.stockLevel.findMany({
-      where: { branch: { organizationId }, branchId },
+      where: {
+        branch: { organizationId }, branchId: q.branchId, productId: q.productId,
+        OR: q.search ? [
+          { product: { name: { contains: q.search, mode: 'insensitive' } } },
+          { product: { sku: { contains: q.search, mode: 'insensitive' } } },
+          { product: { category: { name: { contains: q.search, mode: 'insensitive' } } } },
+        ] : undefined,
+      },
       include: { branch: true, product: true },
       orderBy: { product: { name: 'asc' } },
     });
@@ -264,18 +282,34 @@ export class ReportsService {
       lowStock: Number(row.quantityOnHand) <= Number(row.product.reorderLevel),
     }));
   }
-  async lowStock(userId: string, branchId?: string) {
-    return (await this.inventory(userId, branchId)).filter(
+  async lowStock(userId: string, q: ReportFilterDto = {}) {
+    return (await this.inventory(userId, q)).filter(
       (row) => row.lowStock,
     );
   }
-  async creditAging(userId: string) {
-    const organizationId = await this.org(userId),
+  async creditAging(userId: string, q: ReportFilterDto = {}) {
+    const organizationId = await this.scope(userId, q),
       now = Date.now();
     const rows = await this.prisma.creditAgreement.findMany({
       where: {
         customer: { organizationId },
-        status: { in: [CreditStatus.ACTIVE, CreditStatus.OVERDUE] },
+        sale: { branchId: q.branchId },
+        customerId: q.customerId,
+        status: q.status
+          ? (q.status as CreditStatus)
+          : { in: [CreditStatus.ACTIVE, CreditStatus.OVERDUE] },
+        outstandingBalance:
+          q.minAmount !== undefined || q.maxAmount !== undefined
+            ? { gte: q.minAmount, lte: q.maxAmount }
+            : undefined,
+        OR: q.search
+          ? [
+              { sale: { invoiceNumber: { contains: q.search, mode: 'insensitive' } } },
+              { customer: { firstName: { contains: q.search, mode: 'insensitive' } } },
+              { customer: { lastName: { contains: q.search, mode: 'insensitive' } } },
+              { customer: { customerNumber: { contains: q.search, mode: 'insensitive' } } },
+            ]
+          : undefined,
       },
       include: {
         customer: {
@@ -311,6 +345,179 @@ export class ReportsService {
         status: row.status,
       };
     });
+  }
+  async purchases(userId: string, q: ReportFilterDto) {
+    const organizationId = await this.scope(userId, q), { from, to } = this.dates(q);
+    const rows = await this.prisma.purchaseOrder.findMany({
+      where: {
+        branch: { organizationId }, branchId: q.branchId, supplierId: q.supplierId,
+        status: q.status as PurchaseOrderStatus | undefined,
+        total: q.minAmount !== undefined || q.maxAmount !== undefined ? { gte: q.minAmount, lte: q.maxAmount } : undefined,
+        createdAt: { gte: from, lte: to },
+        OR: q.search ? [
+          { orderNumber: { contains: q.search, mode: 'insensitive' } },
+          { supplier: { name: { contains: q.search, mode: 'insensitive' } } },
+        ] : undefined,
+      },
+      include: { branch: true, supplier: true, approvedBy: true, _count: { select: { items: true, receipts: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => ({
+      orderNumber: row.orderNumber, createdAt: row.createdAt, expectedAt: row.expectedAt,
+      branch: row.branch.name, supplier: row.supplier.name, items: row._count.items,
+      receipts: row._count.receipts, subtotal: Number(row.subtotal), discount: Number(row.discountTotal),
+      tax: Number(row.taxTotal), total: Number(row.total), status: row.status,
+      approvedBy: row.approvedBy?.email ?? '', approvedAt: row.approvedAt,
+    }));
+  }
+  async returns(userId: string, q: ReportFilterDto) {
+    const organizationId = await this.scope(userId, q), { from, to } = this.dates(q);
+    const rows = await this.prisma.return.findMany({
+      where: {
+        sale: { branch: { organizationId }, branchId: q.branchId, customerId: q.customerId },
+        status: q.status as ReturnStatus | undefined,
+        resolution: q.resolution as ReturnResolution | undefined,
+        total: q.minAmount !== undefined || q.maxAmount !== undefined ? { gte: q.minAmount, lte: q.maxAmount } : undefined,
+        createdAt: { gte: from, lte: to },
+        OR: q.search ? [
+          { returnNumber: { contains: q.search, mode: 'insensitive' } },
+          { reason: { contains: q.search, mode: 'insensitive' } },
+          { sale: { invoiceNumber: { contains: q.search, mode: 'insensitive' } } },
+        ] : undefined,
+      },
+      include: { sale: { include: { branch: true, customer: true } }, _count: { select: { items: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => ({
+      returnNumber: row.returnNumber, invoiceNumber: row.sale.invoiceNumber, createdAt: row.createdAt,
+      completedAt: row.completedAt, branch: row.sale.branch.name,
+      customer: row.sale.customer ? `${row.sale.customer.firstName} ${row.sale.customer.lastName ?? ''}`.trim() : 'Walk-in',
+      items: row._count.items, reason: row.reason, resolution: row.resolution,
+      refundAmount: Number(row.total), storeCredit: Number(row.storeCreditAmount),
+      loyaltyPoints: row.loyaltyPointsAwarded, status: row.status,
+    }));
+  }
+  async customers(userId: string, q: ReportFilterDto) {
+    const organizationId = await this.scope(userId, q), { from, to } = this.dates(q);
+    const rows = await this.prisma.customer.findMany({
+      where: {
+        organizationId, status: q.status as RecordStatus | undefined,
+        createdAt: { gte: from, lte: to },
+        sales: q.branchId ? { some: { branchId: q.branchId } } : undefined,
+        OR: q.search ? [
+          { customerNumber: { contains: q.search, mode: 'insensitive' } },
+          { firstName: { contains: q.search, mode: 'insensitive' } },
+          { lastName: { contains: q.search, mode: 'insensitive' } },
+          { email: { contains: q.search, mode: 'insensitive' } },
+          { phone: { contains: q.search } },
+        ] : undefined,
+      },
+      include: {
+        sales: { where: { branchId: q.branchId, createdAt: { gte: from, lte: to } }, select: { total: true } },
+        creditAgreements: { where: { status: { in: [CreditStatus.ACTIVE, CreditStatus.OVERDUE] } }, select: { outstandingBalance: true } },
+        loyaltyAccount: { select: { points: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => ({
+      customerNumber: row.customerNumber, customer: `${row.firstName} ${row.lastName ?? ''}`.trim(),
+      email: row.email ?? '', phone: row.phone ?? '', status: row.status, joinedAt: row.createdAt,
+      orders: row.sales.length, salesTotal: row.sales.reduce((sum, sale) => sum + Number(sale.total), 0),
+      creditLimit: Number(row.creditLimit),
+      outstandingCredit: row.creditAgreements.reduce((sum, agreement) => sum + Number(agreement.outstandingBalance), 0),
+      loyaltyPoints: row.loyaltyAccount?.points ?? 0,
+    }));
+  }
+  async stockMovements(userId: string, q: ReportFilterDto) {
+    const organizationId = await this.scope(userId, q), { from, to } = this.dates(q);
+    const rows = await this.prisma.stockMovement.findMany({
+      where: {
+        branch: { organizationId }, branchId: q.branchId, productId: q.productId,
+        type: q.status as StockMovementType | undefined, createdAt: { gte: from, lte: to },
+        OR: q.search ? [
+          { product: { name: { contains: q.search, mode: 'insensitive' } } },
+          { product: { sku: { contains: q.search, mode: 'insensitive' } } },
+          { reason: { contains: q.search, mode: 'insensitive' } },
+          { referenceId: { contains: q.search, mode: 'insensitive' } },
+        ] : undefined,
+      },
+      include: { branch: true, product: true, inventoryUnit: true, user: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => ({
+      date: row.createdAt, branch: row.branch.name, sku: row.product.sku, product: row.product.name,
+      serialNumber: row.inventoryUnit?.serialNumber ?? '', type: row.type, quantity: Number(row.quantity),
+      referenceType: row.referenceType ?? '', reference: row.referenceId ?? '',
+      reason: row.reason ?? '', performedBy: row.user?.email ?? 'System',
+    }));
+  }
+  async stockTransfers(userId: string, q: ReportFilterDto) {
+    const organizationId = await this.scope(userId, q), { from, to } = this.dates(q);
+    const rows = await this.prisma.stockTransfer.findMany({
+      where: {
+        sourceBranch: { organizationId }, status: q.status as TransferStatus | undefined,
+        createdAt: { gte: from, lte: to },
+        AND: q.branchId ? [{ OR: [{ sourceBranchId: q.branchId }, { destinationBranchId: q.branchId }] }] : undefined,
+        OR: q.search ? [
+          { transferNumber: { contains: q.search, mode: 'insensitive' } },
+          { notes: { contains: q.search, mode: 'insensitive' } },
+        ] : undefined,
+      },
+      include: { sourceBranch: true, destinationBranch: true, items: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => ({
+      transferNumber: row.transferNumber, createdAt: row.createdAt, source: row.sourceBranch.name,
+      destination: row.destinationBranch.name, products: row.items.length,
+      quantity: row.items.reduce((sum, item) => sum + Number(item.quantity), 0),
+      receivedQuantity: row.items.reduce((sum, item) => sum + Number(item.receivedQuantity), 0),
+      status: row.status, dispatchedAt: row.dispatchedAt, receivedAt: row.receivedAt, reason: row.notes ?? '',
+    }));
+  }
+  async warranties(userId: string, q: ReportFilterDto) {
+    const organizationId = await this.scope(userId, q), { from, to } = this.dates(q);
+    const rows = await this.prisma.warranty.findMany({
+      where: {
+        customer: { organizationId }, customerId: q.customerId,
+        inventoryUnit: { productId: q.productId, branchId: q.branchId },
+        status: q.status as WarrantyStatus | undefined, createdAt: { gte: from, lte: to },
+        OR: q.search ? [
+          { inventoryUnit: { serialNumber: { contains: q.search, mode: 'insensitive' } } },
+          { customer: { firstName: { contains: q.search, mode: 'insensitive' } } },
+          { customer: { lastName: { contains: q.search, mode: 'insensitive' } } },
+        ] : undefined,
+      },
+      include: { customer: true, inventoryUnit: { include: { product: true, branch: true } }, warrantyPolicy: true, _count: { select: { events: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => ({
+      serialNumber: row.inventoryUnit.serialNumber, product: row.inventoryUnit.product.name,
+      branch: row.inventoryUnit.branch.name, customer: `${row.customer.firstName} ${row.customer.lastName ?? ''}`.trim(),
+      policy: row.warrantyPolicy.name, status: row.status, startsAt: row.startsAt,
+      endsAt: row.endsAt, activatedAt: row.activatedAt, events: row._count.events,
+    }));
+  }
+  async employees(userId: string, q: ReportFilterDto) {
+    const organizationId = await this.scope(userId, q), { from, to } = this.dates(q);
+    const rows = await this.prisma.user.findMany({
+      where: {
+        organizationMemberships: { some: { organizationId } },
+        status: q.status as UserStatus | undefined, createdAt: { gte: from, lte: to },
+        roles: q.roleId ? { some: { roleId: q.roleId } } : undefined,
+        branchAssignments: q.branchId ? { some: { branchId: q.branchId } } : undefined,
+        OR: q.search ? [
+          { name: { contains: q.search, mode: 'insensitive' } },
+          { email: { contains: q.search, mode: 'insensitive' } },
+        ] : undefined,
+      },
+      include: { roles: { include: { role: true } }, branchAssignments: { include: { branch: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => ({
+      employee: row.name ?? '', email: row.email, roles: row.roles.map(({ role }) => role.name).join(', '),
+      branches: row.branchAssignments.map(({ branch }) => branch.name).join(', '),
+      status: row.status, emailVerified: Boolean(row.emailVerified), lastLoginAt: row.lastLoginAt, createdAt: row.createdAt,
+    }));
   }
   async salesCsv(userId: string, q: ReportFilterDto) {
     const rows = await this.sales(userId, q),
@@ -348,15 +555,22 @@ export class ReportsService {
       .map((row) => row.map((value) => this.csv(value)).join(','))
       .join('\r\n');
   }
-  async inventoryCsv(userId: string, branchId?: string) {
-    return this.rowsCsv(await this.inventory(userId, branchId));
+  async inventoryCsv(userId: string, q: ReportFilterDto) {
+    return this.rowsCsv(await this.inventory(userId, q));
   }
-  async lowStockCsv(userId: string, branchId?: string) {
-    return this.rowsCsv(await this.lowStock(userId, branchId));
+  async lowStockCsv(userId: string, q: ReportFilterDto) {
+    return this.rowsCsv(await this.lowStock(userId, q));
   }
-  async creditAgingCsv(userId: string) {
-    return this.rowsCsv(await this.creditAging(userId));
+  async creditAgingCsv(userId: string, q: ReportFilterDto) {
+    return this.rowsCsv(await this.creditAging(userId, q));
   }
+  async purchasesCsv(userId: string, q: ReportFilterDto) { return this.rowsCsv(await this.purchases(userId, q)); }
+  async returnsCsv(userId: string, q: ReportFilterDto) { return this.rowsCsv(await this.returns(userId, q)); }
+  async customersCsv(userId: string, q: ReportFilterDto) { return this.rowsCsv(await this.customers(userId, q)); }
+  async stockMovementsCsv(userId: string, q: ReportFilterDto) { return this.rowsCsv(await this.stockMovements(userId, q)); }
+  async stockTransfersCsv(userId: string, q: ReportFilterDto) { return this.rowsCsv(await this.stockTransfers(userId, q)); }
+  async warrantiesCsv(userId: string, q: ReportFilterDto) { return this.rowsCsv(await this.warranties(userId, q)); }
+  async employeesCsv(userId: string, q: ReportFilterDto) { return this.rowsCsv(await this.employees(userId, q)); }
   private rowsCsv(rows: Array<Record<string, unknown>>) {
     if (!rows.length) return '';
     const columns = Object.keys(rows[0]);
