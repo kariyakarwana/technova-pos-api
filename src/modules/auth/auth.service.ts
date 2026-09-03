@@ -479,6 +479,31 @@ export class AuthService {
     };
   }
 
+  async sendEmployeeWelcomeEmail(
+    to: string,
+    employeeName: string,
+    temporaryPassword: string,
+  ): Promise<void> {
+    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    const name = this.escapeHtml(employeeName);
+    const password = this.escapeHtml(temporaryPassword);
+    await this.sendMail(
+      to,
+      'Your TechNova POS employee account',
+      `<p>Hello ${name},</p><p>Your TechNova POS employee account is ready.</p><p><strong>Email:</strong> ${this.escapeHtml(to)}<br/><strong>Temporary password:</strong> <code>${password}</code></p><p><a href="${this.escapeHtml(loginUrl)}">Sign in to TechNova POS</a></p><p>For security, change this temporary password immediately after signing in. Do not share it with anyone.</p>`,
+    );
+  }
+
+  private escapeHtml(value: string): string {
+    return value.replace(/[&<>'"]/g, (character) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      "'": '&#39;',
+      '"': '&quot;',
+    })[character] ?? character);
+  }
+
   private async sendMail(
     to: string,
     subject: string,

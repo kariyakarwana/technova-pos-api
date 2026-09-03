@@ -2,22 +2,26 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma, UserStatus } from '@prisma/client';
+import { randomBytes } from 'node:crypto';
 
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
-import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
+import { paginate } from '../../common/dto/pagination.dto';
 import { hashPassword } from '../../common/security/password';
 import type { SecurityRequestContext } from '../../common/security/request';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
-import { CreateUserDto, UpdateUserAccessDto } from './dto/user.dto';
+import { AuthService } from '../auth/auth.service';
+import { CreateUserDto, UpdateUserAccessDto, UserQueryDto } from './dto/user.dto';
 
 @Injectable()
 export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly auth: AuthService,
   ) {}
 
   private async organizationId(userId: string) {
@@ -28,9 +32,22 @@ export class UsersService {
     return membership.organizationId;
   }
 
-  async list(actorId: string, query: PaginationDto) {
+  async list(actorId: string, query: UserQueryDto) {
     const organizationId = await this.organizationId(actorId);
-    const where = { organizationMemberships: { some: { organizationId } } };
+    const where: Prisma.UserWhereInput = {
+      organizationMemberships: { some: { organizationId } },
+      status: query.status,
+      roles: query.roleId ? { some: { roleId: query.roleId } } : undefined,
+      branchAssignments: query.branchId
+        ? { some: { branchId: query.branchId } }
+        : undefined,
+      OR: query.search
+        ? [
+            { name: { contains: query.search, mode: 'insensitive' } },
+            { email: { contains: query.search, mode: 'insensitive' } },
+          ]
+        : undefined,
+    };
     const select = {
       id: true,
       email: true,
@@ -67,12 +84,19 @@ export class UsersService {
   ) {
     const organizationId = await this.organizationId(actor.id);
     await this.validateAssignments(organizationId, dto.roleIds, dto.branchIds);
+    const temporaryPassword = `Tn1!${randomBytes(12).toString('base64url')}`;
+    let user: {
+      id: string;
+      email: string;
+      name: string | null;
+      status: UserStatus;
+    };
     try {
-      const user = await this.prisma.user.create({
+      user = await this.prisma.user.create({
         data: {
           email: dto.email.trim().toLowerCase(),
           name: dto.name.trim(),
-          passwordHash: await hashPassword(dto.password),
+          passwordHash: await hashPassword(temporaryPassword),
           emailVerified: new Date(),
           status: UserStatus.ACTIVE,
           organizationMemberships: { create: { organizationId } },
@@ -86,13 +110,6 @@ export class UsersService {
         },
         select: { id: true, email: true, name: true, status: true },
       });
-      await this.audit.record({
-        userId: actor.id,
-        action: 'USER_CREATED',
-        context,
-        metadata: { targetUserId: user.id },
-      });
-      return user;
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -101,6 +118,25 @@ export class UsersService {
         throw new ConflictException('A user with this email already exists.');
       throw error;
     }
+    try {
+      await this.auth.sendEmployeeWelcomeEmail(
+        user.email,
+        user.name ?? dto.name.trim(),
+        temporaryPassword,
+      );
+    } catch {
+      await this.prisma.user.delete({ where: { id: user.id } });
+      throw new ServiceUnavailableException(
+        'The employee email could not be delivered, so the account was not created. Check the SMTP settings and try again.',
+      );
+    }
+    await this.audit.record({
+      userId: actor.id,
+      action: 'USER_CREATED',
+      context,
+      metadata: { targetUserId: user.id },
+    });
+    return { ...user, temporaryPasswordSent: true };
   }
 
   async updateAccess(
@@ -117,6 +153,10 @@ export class UsersService {
       },
     });
     if (!target) throw new NotFoundException('User not found.');
+    if (targetUserId === actor.id && dto.status && dto.status !== UserStatus.ACTIVE)
+      throw new ConflictException('You cannot deactivate your own account.');
+    if (dto.status && dto.status !== UserStatus.ACTIVE)
+      await this.assertNotLastSuperAdmin(organizationId, targetUserId);
     if (dto.roleIds || dto.branchIds)
       await this.validateAssignments(
         organizationId,
@@ -164,6 +204,69 @@ export class UsersService {
       metadata: { targetUserId },
     });
     return { updated: true };
+  }
+
+  async remove(
+    actor: AuthenticatedUser,
+    targetUserId: string,
+    context: SecurityRequestContext,
+  ) {
+    if (targetUserId === actor.id)
+      throw new ConflictException('You cannot delete your own account.');
+    const organizationId = await this.organizationId(actor.id);
+    const target = await this.prisma.user.findFirst({
+      where: {
+        id: targetUserId,
+        organizationMemberships: { some: { organizationId } },
+      },
+      select: { id: true, email: true },
+    });
+    if (!target) throw new NotFoundException('User not found.');
+    await this.assertNotLastSuperAdmin(organizationId, targetUserId);
+    try {
+      await this.prisma.user.delete({ where: { id: targetUserId } });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2003'
+      )
+        throw new ConflictException(
+          'This employee has business history and cannot be permanently deleted. Deactivate the employee instead.',
+        );
+      throw error;
+    }
+    await this.audit.record({
+      userId: actor.id,
+      action: 'USER_DELETED',
+      context,
+      metadata: { targetUserId, targetEmail: target.email },
+    });
+    return { deleted: true };
+  }
+
+  private async assertNotLastSuperAdmin(
+    organizationId: string,
+    targetUserId: string,
+  ) {
+    const targetIsSuperAdmin = await this.prisma.user.count({
+      where: {
+        id: targetUserId,
+        roles: { some: { role: { name: 'SUPER_ADMIN' } } },
+        organizationMemberships: { some: { organizationId } },
+      },
+    });
+    if (!targetIsSuperAdmin) return;
+    const activeSuperAdmins = await this.prisma.user.count({
+      where: {
+        status: UserStatus.ACTIVE,
+        roles: { some: { role: { name: 'SUPER_ADMIN' } } },
+        organizationMemberships: { some: { organizationId } },
+      },
+    });
+    if (activeSuperAdmins <= 1)
+      throw new ConflictException(
+        'The organization must keep at least one active super administrator.',
+      );
   }
 
   private async validateAssignments(

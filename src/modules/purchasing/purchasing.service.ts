@@ -40,16 +40,40 @@ export class PurchasingService {
   }
   async list(userId: string, q: PurchaseQueryDto) {
     const organizationId = await this.organizationId(userId);
+    if (
+      q.minAmount !== undefined &&
+      q.maxAmount !== undefined &&
+      q.minAmount > q.maxAmount
+    ) {
+      throw new BadRequestException(
+        'Minimum amount cannot be greater than maximum amount.',
+      );
+    }
     const where: Prisma.PurchaseOrderWhereInput = {
       branch: { organizationId },
       branchId: q.branchId,
       supplierId: q.supplierId,
+      orderNumber: q.orderNumber
+        ? { contains: q.orderNumber, mode: 'insensitive' }
+        : undefined,
       status: q.status as PurchaseOrderStatus | undefined,
-      createdAt: q.from || q.to ? { gte: q.from ? new Date(q.from) : undefined, lte: q.to ? new Date(q.to) : undefined } : undefined,
-      OR: q.search ? [
-        { orderNumber: { contains: q.search, mode: 'insensitive' } },
-        { supplier: { name: { contains: q.search, mode: 'insensitive' } } },
-      ] : undefined,
+      total:
+        q.minAmount !== undefined || q.maxAmount !== undefined
+          ? { gte: q.minAmount, lte: q.maxAmount }
+          : undefined,
+      createdAt:
+        q.from || q.to
+          ? {
+              gte: q.from ? new Date(q.from) : undefined,
+              lte: q.to ? new Date(q.to) : undefined,
+            }
+          : undefined,
+      OR: q.search
+        ? [
+            { orderNumber: { contains: q.search, mode: 'insensitive' } },
+            { supplier: { name: { contains: q.search, mode: 'insensitive' } } },
+          ]
+        : undefined,
     };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.purchaseOrder.findMany({
