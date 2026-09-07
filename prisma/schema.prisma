@@ -230,6 +230,7 @@ model User {
   reviewedSupplierResponses SupplierOrderResponse[] @relation("SupplierResponseReviewer")
   supplierShipments         SupplierShipment[]      @relation("SupplierShipmentDispatcher")
   appNotifications          AppNotification[]
+  dashboards                Dashboard[]
 
   @@index([status])
   @@index([createdAt])
@@ -440,33 +441,36 @@ model AuditEvent {
 }
 
 model Organization {
-  id                                String                 @id @default(cuid())
-  name                              String
-  registrationNumber                String?                @unique
-  phone                             String?
-  email                             String?
-  address                           Json?
-  timezone                          String                 @default("Asia/Colombo")
-  currencyCode                      String                 @default("LKR") @db.VarChar(3)
+  id                    String                 @id @default(cuid())
+  name                  String
+  registrationNumber    String?                @unique
+  phone                 String?
+  email                 String?
+  address               Json?
+  timezone              String                 @default("Asia/Colombo")
+  currencyCode          String                 @default("LKR") @db.VarChar(3)
   status                            RecordStatus           @default(ACTIVE)
   supplierPortalEnabled             Boolean                @default(true)
   supplierOrderChangesEnabled       Boolean                @default(true)
   supplierEmailNotificationsEnabled Boolean                @default(true)
   supplierInAppNotificationsEnabled Boolean                @default(true)
   createdAt                         DateTime               @default(now())
-  updatedAt                         DateTime               @updatedAt
-  branding                          BrandingAsset?
-  branches                          Branch[]
-  users                             OrganizationUser[]
-  categories                        Category[]
-  brands                            Brand[]
-  products                          Product[]
-  suppliers                         Supplier[]
-  customers                         Customer[]
-  discountRules                     DiscountRule[]
-  notificationTemplates             NotificationTemplate[]
-  domainEvents                      DomainEvent[]
-  appNotifications                  AppNotification[]
+  updatedAt             DateTime               @updatedAt
+  branding              BrandingAsset?
+  branches              Branch[]
+  users                 OrganizationUser[]
+  categories            Category[]
+  brands                Brand[]
+  products              Product[]
+  suppliers             Supplier[]
+  customers             Customer[]
+  discountRules         DiscountRule[]
+  notificationTemplates NotificationTemplate[]
+  domainEvents          DomainEvent[]
+  appNotifications      AppNotification[]
+  dashboards            Dashboard[]
+  dashboardTemplates    DashboardTemplate[]
+  visualThemes          VisualTheme[]
 
   @@index([status])
   @@map("organizations")
@@ -518,6 +522,7 @@ model Branch {
   sourceTransfers      StockTransfer[] @relation("TransferSource")
   destinationTransfers StockTransfer[] @relation("TransferDestination")
   stockMovements       StockMovement[]
+  dashboards           Dashboard[]
 
   @@unique([organizationId, code])
   @@index([organizationId, status])
@@ -1434,4 +1439,123 @@ model OfflineSyncOperation {
   @@index([batchId, status])
   @@index([clientTimestamp])
   @@map("offline_sync_operations")
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard customization models
+// ---------------------------------------------------------------------------
+
+// Stores a saved customizable dashboard configuration for an organization.
+// Optionally scoped to a specific branch or a specific user.
+//
+// Ownership design:
+//   - organizationId (required): Every dashboard belongs to an organization.
+//     This is the primary tenant-isolation boundary enforced server-side.
+//   - branchId (optional): When set, the dashboard is branch-specific and
+//     displayed for all users of that branch (unless further overridden by userId).
+//   - userId (optional): When set, the dashboard is personal — visible only
+//     to that user. A user may have multiple named dashboards but at most one
+//     isDefault per organization.
+//
+// onDelete behavior:
+//   - Organization: Cascade — if the tenant is deleted all their dashboards go.
+//   - Branch: SetNull — if a branch is deleted, the dashboard reverts to
+//     organization scope rather than being silently destroyed.
+//   - User: SetNull — if a user is deleted, the personal dashboard is
+//     orphaned to org scope rather than deleted, preserving layout data.
+model Dashboard {
+  id             String  @id @default(cuid())
+  organizationId String
+  branchId       String?
+  userId         String?
+
+  name        String
+  description String?
+  isDefault   Boolean @default(false)
+
+  // JSON configuration blob — stores widget grid positions and settings.
+  // Schema (application-enforced, not DB-enforced):
+  //   { version: number, columns: number, rowHeight: number,
+  //     widgets: Array<{ id, type, title, position: {x,y,w,h}, settings: {} }> }
+  layout Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, userId])
+  @@index([organizationId, branchId])
+  @@index([organizationId, isDefault])
+  @@map("dashboards")
+}
+
+// Stores reusable dashboard layout blueprints.
+// Templates are always organization-scoped; they are never user- or branch-specific
+// because they are designed to be applied across multiple dashboards.
+//
+// isSystem = true  → shipped with the product (e.g. "Store Manager Overview").
+// isSystem = false → created by the organization's own administrators.
+//
+// onDelete behavior:
+//   - Organization: Cascade — templates belong to the tenant.
+//
+// Unique constraint decision:
+//   No composite unique on (organizationId, name) is added. Organizations may
+//   create multiple templates with the same name over time (e.g. "My Layout v1",
+//   "My Layout v1"). Uniqueness is enforced at the application layer if desired.
+model DashboardTemplate {
+  id             String @id @default(cuid())
+  organizationId String
+
+  name        String
+  description String?
+  category    String?
+
+  // Distinguishes product-supplied system templates from org-created ones.
+  isSystem Boolean @default(false)
+
+  // JSON layout blueprint — same structure as Dashboard.layout.
+  layout Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, isSystem])
+  @@map("dashboard_templates")
+}
+
+// Stores a named collection of visual design tokens for the dashboard UI.
+// Themes are separate from layout — a user can switch themes without affecting
+// widget positions, and can switch layouts without affecting their theme.
+//
+// onDelete behavior:
+//   - Organization: Cascade — themes belong to the tenant.
+//
+// Unique constraint decision:
+//   No composite unique on (organizationId, name). Multiple drafts or
+//   similarly named themes are allowed; enforced at application layer.
+model VisualTheme {
+  id             String @id @default(cuid())
+  organizationId String
+
+  name      String
+  isDefault Boolean @default(false)
+
+  // JSON design-token blob.
+  // Example: { mode, primaryColor, secondaryColor, backgroundColor,
+  //            cardBackground, borderRadius, fontFamily }
+  tokens Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, isDefault])
+  @@map("visual_themes")
 }

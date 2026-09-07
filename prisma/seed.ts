@@ -19,6 +19,18 @@ const permissions = [
     description: "View the main dashboard",
   },
   {
+    key: "dashboard:customize",
+    description: "Create and customize personal and organization dashboards",
+  },
+  {
+    key: "dashboard:manage_templates",
+    description: "Create, update, and manage dashboard layout templates",
+  },
+  {
+    key: "dashboard:manage_themes",
+    description: "Create, update, and manage visual themes",
+  },
+  {
     key: "users:manage",
     description: "Create, update, activate and deactivate users",
   },
