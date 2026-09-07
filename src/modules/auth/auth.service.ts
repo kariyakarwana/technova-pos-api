@@ -44,6 +44,7 @@ type LoginResult = {
     name: string | null;
     roles: string[];
     permissions: string[];
+    mustChangePassword: boolean;
   };
 };
 
@@ -155,6 +156,7 @@ export class AuthService {
         name: user.name,
         roles,
         permissions,
+        mustChangePassword: user.mustChangePassword,
       },
     };
   }
@@ -476,6 +478,7 @@ export class AuthService {
           ),
         ),
       ],
+      mustChangePassword: user.mustChangePassword,
     };
   }
 
@@ -491,6 +494,19 @@ export class AuthService {
       to,
       'Your TechNova POS employee account',
       `<p>Hello ${name},</p><p>Your TechNova POS employee account is ready.</p><p><strong>Email:</strong> ${this.escapeHtml(to)}<br/><strong>Temporary password:</strong> <code>${password}</code></p><p><a href="${this.escapeHtml(loginUrl)}">Sign in to TechNova POS</a></p><p>For security, change this temporary password immediately after signing in. Do not share it with anyone.</p>`,
+    );
+  }
+
+  async sendSupplierWelcomeEmail(
+    to: string,
+    contactName: string,
+    temporaryPassword: string,
+  ): Promise<void> {
+    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    await this.sendMail(
+      to,
+      'Your TechNova POS supplier portal account',
+      `<p>Hello ${this.escapeHtml(contactName)},</p><p>Your TechNova supplier portal is ready. You can review purchase orders, respond with availability or proposed changes, and submit dispatch and invoice information.</p><p><strong>Email:</strong> ${this.escapeHtml(to)}<br/><strong>Temporary password:</strong> <code>${this.escapeHtml(temporaryPassword)}</code></p><p><a href="${this.escapeHtml(loginUrl)}">Sign in to the supplier portal</a></p><p>For security, change this temporary password immediately after signing in. Do not share it with anyone.</p>`,
     );
   }
 

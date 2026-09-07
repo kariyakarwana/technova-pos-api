@@ -18,9 +18,22 @@ import { PrismaService } from '../../database/prisma/prisma.service';
 import {
   CreateTemplateDto,
   OutboxQueryDto,
+  AppNotificationQueryDto,
   PreferenceDto,
   UpdateTemplateDto,
 } from './dto/notification.dto';
+
+type CustomerWelcomeInput = {
+  organizationId: string;
+  companyName: string;
+  customerId: string;
+  customerNumber: string;
+  firstName: string;
+  lastName: string | null;
+  phone: string | null;
+  email: string | null;
+};
+
 @Injectable()
 export class NotificationsService {
   constructor(
@@ -54,6 +67,12 @@ export class NotificationsService {
         payload,
       },
     });
+    const templatePayload: Prisma.InputJsonObject = {
+      ...(payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? (payload as Prisma.InputJsonObject)
+        : { payload }),
+      companyName: membership.organization.name,
+    };
     const templates = await this.prisma.notificationTemplate.findMany({
       where: {
         organizationId: membership.organizationId,
@@ -74,9 +93,9 @@ export class NotificationsService {
           channel: template.channel,
           recipient,
           subject: template.subjectTemplate
-            ? this.render(template.subjectTemplate, eventType, payload)
+            ? this.render(template.subjectTemplate, eventType, templatePayload)
             : undefined,
-          body: this.render(template.bodyTemplate, eventType, payload),
+          body: this.render(template.bodyTemplate, eventType, templatePayload),
           idempotencyKey: `${event.id}:${template.id}:${recipient}`,
         },
       });
@@ -86,6 +105,91 @@ export class NotificationsService {
       data: { processedAt: new Date() },
     });
   }
+
+  async queueCustomerWelcome(input: CustomerWelcomeInput) {
+    const destinations: Array<{
+      channel: NotificationChannel;
+      recipient: string;
+    }> = [];
+    if (input.email)
+      destinations.push({
+        channel: NotificationChannel.EMAIL,
+        recipient: input.email,
+      });
+    if (input.phone)
+      destinations.push({
+        channel: NotificationChannel.WHATSAPP,
+        recipient: input.phone,
+      });
+    if (!destinations.length) return { queuedChannels: [] as string[] };
+
+    const eventType = 'CUSTOMER_WELCOME';
+    const payload = {
+      companyName: input.companyName,
+      customerId: input.customerId,
+      customerNumber: input.customerNumber,
+      customerName: `${input.firstName} ${input.lastName ?? ''}`.trim(),
+      firstName: input.firstName,
+    };
+    const templates = await this.prisma.notificationTemplate.findMany({
+      where: {
+        organizationId: input.organizationId,
+        eventType,
+        channel: { in: destinations.map((item) => item.channel) },
+      },
+    });
+    const templateByChannel = new Map(
+      templates.map((template) => [template.channel, template]),
+    );
+    const enabledDestinations = destinations.filter((destination) => {
+      const template = templateByChannel.get(destination.channel);
+      return !template || template.status === RecordStatus.ACTIVE;
+    });
+    if (!enabledDestinations.length) return { queuedChannels: [] as string[] };
+
+    await this.prisma.$transaction(async (transaction) => {
+      const event = await transaction.domainEvent.create({
+        data: {
+          organizationId: input.organizationId,
+          aggregateType: 'CUSTOMER',
+          aggregateId: input.customerId,
+          eventType,
+          payload,
+        },
+      });
+      await transaction.notificationOutbox.createMany({
+        data: enabledDestinations.map((destination) => {
+          const template = templateByChannel.get(destination.channel);
+          const isEmail = destination.channel === NotificationChannel.EMAIL;
+          return {
+            domainEventId: event.id,
+            templateId: template?.id,
+            channel: destination.channel,
+            recipient: destination.recipient,
+            subject: isEmail
+              ? template?.subjectTemplate
+                ? this.render(template.subjectTemplate, eventType, payload)
+                : `Welcome to ${input.companyName}`
+              : undefined,
+            body: template
+              ? this.render(template.bodyTemplate, eventType, payload)
+              : isEmail
+                ? `<p>Hello ${this.escapeHtml(payload.customerName)},</p><p>Thank you for being a customer of <strong>${this.escapeHtml(input.companyName)}</strong>.</p><p>Your customer number is <strong>${this.escapeHtml(input.customerNumber)}</strong>. We look forward to serving you.</p>`
+                : `Hello ${payload.customerName}! Thank you for being a customer of ${input.companyName}. Your customer number is ${input.customerNumber}. We look forward to serving you.`,
+            idempotencyKey: `customer-welcome:${input.customerId}:${destination.channel}`,
+          };
+        }),
+      });
+      await transaction.domainEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
+      });
+    });
+
+    return {
+      queuedChannels: enabledDestinations.map((item) => item.channel),
+    };
+  }
   async templates(userId: string) {
     const organizationId = await this.org(userId);
     return this.prisma.notificationTemplate.findMany({
@@ -93,31 +197,224 @@ export class NotificationsService {
       orderBy: [{ eventType: 'asc' }, { channel: 'asc' }],
     });
   }
+  templateCatalog() {
+    return [
+      {
+        eventType: 'CUSTOMER_WELCOME',
+        label: 'Customer welcome',
+        audience: 'Customer',
+        description: 'Sent after a new customer profile is created.',
+        variables: [
+          ['companyName', 'Company name', 'TechNova'],
+          ['customerName', 'Customer full name', 'Saman Perera'],
+          ['firstName', 'Customer first name', 'Saman'],
+          ['customerNumber', 'Customer number', 'CUS-000124'],
+        ],
+        suggestions: {
+          EMAIL: {
+            name: 'Customer welcome email',
+            subjectTemplate: 'Welcome to {{companyName}}',
+            bodyTemplate:
+              'Hello {{customerName}},\n\nThank you for becoming a customer of {{companyName}}.\nYour customer number is {{customerNumber}}.\n\nWe look forward to serving you.',
+          },
+          WHATSAPP: {
+            name: 'Customer welcome WhatsApp',
+            bodyTemplate:
+              'Hello {{firstName}}! Thank you for becoming a customer of {{companyName}}. Your customer number is {{customerNumber}}. We look forward to serving you.',
+          },
+        },
+      },
+      {
+        eventType: 'PROMOTION_STARTED',
+        label: 'Promotion started',
+        audience: 'Customer',
+        description:
+          'Sent once when an enabled promotion reaches its start time.',
+        variables: [
+          ['companyName', 'Company name', 'TechNova'],
+          ['customerName', 'Customer full name', 'Saman Perera'],
+          ['promotionName', 'Promotion name', 'September Sale'],
+          ['promotionCode', 'Promotion code', 'SEP-SALE'],
+          ['description', 'Promotion description', 'Selected items only'],
+          ['offer', 'Promotion offer', '15% off'],
+          ['product', 'Eligible product', 'All eligible products'],
+          ['startsAt', 'Start date/time', 'September 7, 2026'],
+          ['endsAt', 'End date/time', 'September 30, 2026'],
+        ],
+        suggestions: {
+          EMAIL: {
+            name: 'Promotion launch email',
+            subjectTemplate:
+              '{{promotionName}} is now available at {{companyName}}',
+            bodyTemplate:
+              'Hello {{customerName}},\n\n{{promotionName}} has started at {{companyName}}.\nOffer: {{offer}} on {{product}}.\nCode: {{promotionCode}}\nValid until: {{endsAt}}\n\n{{description}}',
+          },
+          WHATSAPP: {
+            name: 'Promotion launch WhatsApp',
+            bodyTemplate:
+              'Hello {{customerName}}! {{promotionName}} is now available at {{companyName}}: {{offer}} on {{product}}. Code: {{promotionCode}}. Valid until {{endsAt}}. {{description}}',
+          },
+        },
+      },
+      {
+        eventType: 'CREDIT_PAYMENT_REMINDER',
+        label: 'Credit payment reminder',
+        audience: 'Customer',
+        description: 'Sent when a credit installment is due or overdue.',
+        variables: [
+          ['customerNumber', 'Customer number', 'CUS-000124'],
+          ['installmentId', 'Installment reference', 'INS-1045'],
+          ['dueDate', 'Payment due date', 'September 10, 2026'],
+          ['amountDue', 'Outstanding amount', '12500'],
+        ],
+        suggestions: {
+          EMAIL: {
+            name: 'Credit payment reminder email',
+            subjectTemplate: 'Payment reminder for {{customerNumber}}',
+            bodyTemplate:
+              'Hello,\n\nThis is a friendly reminder that LKR {{amountDue}} is due on {{dueDate}} for customer {{customerNumber}}.\nReference: {{installmentId}}.',
+          },
+          WHATSAPP: {
+            name: 'Credit payment reminder WhatsApp',
+            bodyTemplate:
+              'Payment reminder: LKR {{amountDue}} is due on {{dueDate}} for customer {{customerNumber}}. Reference: {{installmentId}}.',
+          },
+        },
+      },
+      {
+        eventType: 'LOW_STOCK_ALERT',
+        label: 'Low stock alert',
+        audience: 'Company contact',
+        description:
+          'Sent to the company contact when stock reaches the reorder level.',
+        variables: [
+          ['branch', 'Branch name', 'Colombo Branch'],
+          ['sku', 'Product SKU', 'SKU-1004'],
+          ['product', 'Product name', 'Wireless Mouse'],
+          ['quantity', 'Current quantity', '3'],
+          ['reorderLevel', 'Reorder level', '10'],
+        ],
+        suggestions: {
+          EMAIL: {
+            name: 'Low stock alert email',
+            subjectTemplate: 'Low stock: {{product}} at {{branch}}',
+            bodyTemplate:
+              '{{product}} ({{sku}}) is low at {{branch}}.\nCurrent stock: {{quantity}}\nReorder level: {{reorderLevel}}',
+          },
+          WHATSAPP: {
+            name: 'Low stock alert WhatsApp',
+            bodyTemplate:
+              'Low stock alert: {{product}} ({{sku}}) at {{branch}} has {{quantity}} remaining. Reorder level: {{reorderLevel}}.',
+          },
+        },
+      },
+      ...[
+        ['SALE_COMPLETED', 'Sale completed', 'saleId'],
+        ['PURCHASE_ORDER_CREATED', 'Purchase order created', 'purchaseOrderId'],
+        [
+          'PURCHASE_ORDER_APPROVED',
+          'Purchase order approved',
+          'purchaseOrderId',
+        ],
+        ['GOODS_RECEIPT_CREATED', 'Goods receipt created', 'goodsReceiptId'],
+        ['INVENTORY_ADJUSTED', 'Inventory adjusted', 'stockAdjustmentId'],
+        ['STOCK_TRANSFER_CREATED', 'Stock transfer created', 'transferId'],
+        [
+          'STOCK_TRANSFER_DISPATCHED',
+          'Stock transfer dispatched',
+          'transferId',
+        ],
+        ['STOCK_TRANSFER_RECEIVED', 'Stock transfer received', 'transferId'],
+        ['RETURN_COMPLETED', 'Return completed', 'returnId'],
+        ['CREDIT_PAYMENT_RECEIVED', 'Credit payment received', 'paymentId'],
+      ].map(([eventType, label, referenceKey]) => ({
+        eventType,
+        label,
+        audience: 'Company contact',
+        description:
+          'An internal operational notification generated by the system.',
+        variables: [
+          ['companyName', 'Company name', 'TechNova'],
+          [referenceKey, 'Record reference', 'SYSTEM-REFERENCE'],
+        ],
+        suggestions: {
+          EMAIL: {
+            name: `${label} email`,
+            subjectTemplate: `${label} at {{companyName}}`,
+            bodyTemplate: `${label} at {{companyName}}.\nReference: {{${referenceKey}}}.`,
+          },
+          WHATSAPP: {
+            name: `${label} WhatsApp`,
+            bodyTemplate: `${label} at {{companyName}}. Reference: {{${referenceKey}}}.`,
+          },
+        },
+      })),
+    ];
+  }
   async createTemplate(userId: string, dto: CreateTemplateDto) {
     const organizationId = await this.org(userId);
+    const eventType = dto.eventType.trim().toUpperCase();
+    const name = dto.name.trim();
+    const bodyTemplate = dto.bodyTemplate.trim();
+    const subjectTemplate = dto.subjectTemplate?.trim() || undefined;
+    if (dto.channel === NotificationChannel.EMAIL && !subjectTemplate)
+      throw new BadRequestException('An email subject is required.');
+    if (
+      dto.channel === NotificationChannel.WHATSAPP &&
+      bodyTemplate.length > 1024
+    )
+      throw new BadRequestException(
+        'WhatsApp templates cannot exceed 1,024 characters.',
+      );
     return this.prisma.notificationTemplate.upsert({
       where: {
         organizationId_eventType_channel: {
           organizationId,
-          eventType: dto.eventType,
+          eventType,
           channel: dto.channel,
         },
       },
-      create: { ...dto, organizationId },
-      update: dto,
+      create: {
+        organizationId,
+        eventType,
+        channel: dto.channel,
+        name,
+        subjectTemplate,
+        bodyTemplate,
+        status: dto.status,
+      },
+      update: { name, subjectTemplate, bodyTemplate, status: dto.status },
     });
   }
   async updateTemplate(userId: string, id: string, dto: UpdateTemplateDto) {
     const organizationId = await this.org(userId);
-    if (
-      !(await this.prisma.notificationTemplate.findFirst({
-        where: { id, organizationId },
-      }))
-    )
+    const existing = await this.prisma.notificationTemplate.findFirst({
+      where: { id, organizationId },
+    });
+    if (!existing)
       throw new NotFoundException('Notification template not found.');
+    const subjectTemplate =
+      dto.subjectTemplate === undefined
+        ? existing.subjectTemplate
+        : dto.subjectTemplate.trim() || null;
+    if (existing.channel === NotificationChannel.EMAIL && !subjectTemplate)
+      throw new BadRequestException('An email subject is required.');
+    if (
+      existing.channel === NotificationChannel.WHATSAPP &&
+      dto.bodyTemplate &&
+      dto.bodyTemplate.trim().length > 1024
+    )
+      throw new BadRequestException(
+        'WhatsApp templates cannot exceed 1,024 characters.',
+      );
     return this.prisma.notificationTemplate.update({
       where: { id },
-      data: dto,
+      data: {
+        name: dto.name?.trim(),
+        subjectTemplate,
+        bodyTemplate: dto.bodyTemplate?.trim(),
+        status: dto.status,
+      },
     });
   }
   async preference(userId: string, dto: PreferenceDto) {
@@ -146,18 +443,80 @@ export class NotificationsService {
       domainEvent: { organizationId },
       status: q.status as OutboxStatus | undefined,
       channel: q.channel,
+      OR: q.search
+        ? [
+            { recipient: { contains: q.search, mode: 'insensitive' } },
+            { body: { contains: q.search, mode: 'insensitive' } },
+            { subject: { contains: q.search, mode: 'insensitive' } },
+          ]
+        : undefined,
     };
-    const [data, total] = await this.prisma.$transaction([
-      this.prisma.notificationOutbox.findMany({
+    const [data, total, pending, processing, sent, failed, deadLetter] =
+      await this.prisma.$transaction([
+        this.prisma.notificationOutbox.findMany({
+          where,
+          skip: q.skip,
+          take: q.pageSize,
+          orderBy: { createdAt: 'desc' },
+          include: { attempts: { take: 5, orderBy: { attemptedAt: 'desc' } } },
+        }),
+        this.prisma.notificationOutbox.count({ where }),
+        ...[
+          OutboxStatus.PENDING,
+          OutboxStatus.PROCESSING,
+          OutboxStatus.SENT,
+          OutboxStatus.FAILED,
+          OutboxStatus.DEAD_LETTER,
+        ].map((status) =>
+          this.prisma.notificationOutbox.count({
+            where: { domainEvent: { organizationId }, status },
+          }),
+        ),
+      ]);
+    return {
+      ...paginate(data, total, q),
+      summary: {
+        PENDING: pending,
+        PROCESSING: processing,
+        SENT: sent,
+        FAILED: failed,
+        DEAD_LETTER: deadLetter,
+      },
+    };
+  }
+  async appNotifications(userId: string, q: AppNotificationQueryDto) {
+    const where: Prisma.AppNotificationWhereInput = {
+      recipientUserId: userId,
+      readAt: q.unread === 'true' ? null : undefined,
+    };
+    const [data, total, unread] = await this.prisma.$transaction([
+      this.prisma.appNotification.findMany({
         where,
         skip: q.skip,
         take: q.pageSize,
         orderBy: { createdAt: 'desc' },
-        include: { attempts: { take: 5, orderBy: { attemptedAt: 'desc' } } },
       }),
-      this.prisma.notificationOutbox.count({ where }),
+      this.prisma.appNotification.count({ where }),
+      this.prisma.appNotification.count({
+        where: { recipientUserId: userId, readAt: null },
+      }),
     ]);
-    return paginate(data, total, q);
+    return { ...paginate(data, total, q), unread };
+  }
+  async readAppNotification(userId: string, id: string) {
+    const result = await this.prisma.appNotification.updateMany({
+      where: { id, recipientUserId: userId },
+      data: { readAt: new Date() },
+    });
+    if (!result.count) throw new NotFoundException('Notification not found.');
+    return { read: true };
+  }
+  async readAllAppNotifications(userId: string) {
+    const result = await this.prisma.appNotification.updateMany({
+      where: { recipientUserId: userId, readAt: null },
+      data: { readAt: new Date() },
+    });
+    return { read: result.count };
   }
   async processPending(limit = 20) {
     const rows = await this.prisma.notificationOutbox.findMany({
@@ -240,21 +599,27 @@ export class NotificationsService {
       provider === 'whatchimp'
         ? Boolean(
             this.config.get('WHATCHIMP_API_TOKEN') &&
-              this.config.get('WHATCHIMP_PHONE_NUMBER_ID') &&
-              this.config.get('WHATCHIMP_TEMPLATE_NAME'),
+            this.config.get('WHATCHIMP_PHONE_NUMBER_ID') &&
+            this.config.get('WHATCHIMP_TEMPLATE_NAME'),
           )
         : Boolean(
             this.config.get('WHATSAPP_ACCESS_TOKEN') &&
-              this.config.get('WHATSAPP_PHONE_NUMBER_ID'),
+            this.config.get('WHATSAPP_PHONE_NUMBER_ID'),
           );
     return {
       provider,
       configured,
+      emailConfigured: Boolean(
+        this.config.get('SMTP_HOST') &&
+        this.config.get('SMTP_USER') &&
+        this.config.get('SMTP_PASSWORD') &&
+        this.config.get('SMTP_FROM'),
+      ),
       workerEnabled:
         this.config.get<string>('NOTIFICATION_WORKER_ENABLED') === 'true',
       templateName:
         provider === 'whatchimp'
-          ? this.config.get<string>('WHATCHIMP_TEMPLATE_NAME') ?? null
+          ? (this.config.get<string>('WHATCHIMP_TEMPLATE_NAME') ?? null)
           : null,
     };
   }
@@ -308,7 +673,8 @@ export class NotificationsService {
         from: this.config.getOrThrow('SMTP_FROM'),
         to,
         subject: subject ?? 'TechNova POS notification',
-        html: body,
+        html: this.emailHtml(body),
+        text: this.emailText(body),
       });
       return result.messageId;
     }
@@ -316,8 +682,7 @@ export class NotificationsService {
       const provider = (
         this.config.get<string>('WHATSAPP_PROVIDER') ?? 'meta'
       ).toLowerCase();
-      if (provider === 'whatchimp')
-        return this.deliverWithWhatChimp(to, body);
+      if (provider === 'whatchimp') return this.deliverWithWhatChimp(to, body);
       const token = this.config.getOrThrow<string>('WHATSAPP_ACCESS_TOKEN'),
         phoneId = this.config.getOrThrow<string>('WHATSAPP_PHONE_NUMBER_ID'),
         apiVersion =
@@ -405,6 +770,26 @@ export class NotificationsService {
       ))
         output = output.replaceAll(`{{${key}}}`, String(value));
     return output;
+  }
+
+  private escapeHtml(value: string) {
+    return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+  private emailHtml(value: string) {
+    if (/<[a-z][\s\S]*>/i.test(value)) return value;
+    return `<div style="font-family:Arial,sans-serif;line-height:1.6">${this.escapeHtml(value).replaceAll('\n', '<br>')}</div>`;
+  }
+  private emailText(value: string) {
+    return value
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .trim();
   }
   private aggregateId(payload: Prisma.InputJsonValue) {
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {

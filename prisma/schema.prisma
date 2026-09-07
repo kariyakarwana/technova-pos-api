@@ -44,6 +44,26 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+enum SupplierResponseStatus {
+  ACCEPTED
+  CHANGES_PROPOSED
+  REJECTED
+  CLARIFICATION_REQUESTED
+}
+
+enum SupplierResponseReviewStatus {
+  NOT_REQUIRED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SupplierShipmentStatus {
+  PREPARING
+  DISPATCHED
+  DELIVERED
+}
+
 enum StockMovementType {
   PURCHASE_RECEIPT
   SALE
@@ -181,11 +201,12 @@ model User {
   emailVerified DateTime?
   status        UserStatus @default(PENDING_VERIFICATION)
 
-  failedLoginCount  Int       @default(0)
-  lockedUntil       DateTime?
-  lastLoginAt       DateTime?
-  passwordChangedAt DateTime?
-  sessionVersion    Int       @default(1)
+  failedLoginCount   Int       @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  passwordChangedAt  DateTime?
+  sessionVersion     Int       @default(1)
+  mustChangePassword Boolean   @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -195,15 +216,20 @@ model User {
   authenticators  Authenticator[]
   refreshSessions RefreshSession[]
 
-  roles                   UserRole[]
-  securityTokens          SecurityToken[]
-  auditEvents             AuditEvent[]
-  organizationMemberships OrganizationUser[]
-  branchAssignments       UserBranch[]
-  approvedPurchaseOrders  PurchaseOrder[]    @relation("PurchaseOrderApprover")
-  createdSales            Sale[]             @relation("SaleCreator")
-  stockMovements          StockMovement[]
-  offlineSyncBatches      OfflineSyncBatch[]
+  roles                     UserRole[]
+  securityTokens            SecurityToken[]
+  auditEvents               AuditEvent[]
+  organizationMemberships   OrganizationUser[]
+  branchAssignments         UserBranch[]
+  approvedPurchaseOrders    PurchaseOrder[]         @relation("PurchaseOrderApprover")
+  createdSales              Sale[]                  @relation("SaleCreator")
+  stockMovements            StockMovement[]
+  offlineSyncBatches        OfflineSyncBatch[]
+  supplierMembership        SupplierUser?
+  supplierResponses         SupplierOrderResponse[] @relation("SupplierResponseAuthor")
+  reviewedSupplierResponses SupplierOrderResponse[] @relation("SupplierResponseReviewer")
+  supplierShipments         SupplierShipment[]      @relation("SupplierShipmentDispatcher")
+  appNotifications          AppNotification[]
 
   @@index([status])
   @@index([createdAt])
@@ -414,28 +440,33 @@ model AuditEvent {
 }
 
 model Organization {
-  id                    String                 @id @default(cuid())
-  name                  String
-  registrationNumber    String?                @unique
-  phone                 String?
-  email                 String?
-  address               Json?
-  timezone              String                 @default("Asia/Colombo")
-  currencyCode          String                 @default("LKR") @db.VarChar(3)
-  status                RecordStatus           @default(ACTIVE)
-  createdAt             DateTime               @default(now())
-  updatedAt             DateTime               @updatedAt
-  branding              BrandingAsset?
-  branches              Branch[]
-  users                 OrganizationUser[]
-  categories            Category[]
-  brands                Brand[]
-  products              Product[]
-  suppliers             Supplier[]
-  customers             Customer[]
-  discountRules         DiscountRule[]
-  notificationTemplates NotificationTemplate[]
-  domainEvents          DomainEvent[]
+  id                                String                 @id @default(cuid())
+  name                              String
+  registrationNumber                String?                @unique
+  phone                             String?
+  email                             String?
+  address                           Json?
+  timezone                          String                 @default("Asia/Colombo")
+  currencyCode                      String                 @default("LKR") @db.VarChar(3)
+  status                            RecordStatus           @default(ACTIVE)
+  supplierPortalEnabled             Boolean                @default(true)
+  supplierOrderChangesEnabled       Boolean                @default(true)
+  supplierEmailNotificationsEnabled Boolean                @default(true)
+  supplierInAppNotificationsEnabled Boolean                @default(true)
+  createdAt                         DateTime               @default(now())
+  updatedAt                         DateTime               @updatedAt
+  branding                          BrandingAsset?
+  branches                          Branch[]
+  users                             OrganizationUser[]
+  categories                        Category[]
+  brands                            Brand[]
+  products                          Product[]
+  suppliers                         Supplier[]
+  customers                         Customer[]
+  discountRules                     DiscountRule[]
+  notificationTemplates             NotificationTemplate[]
+  domainEvents                      DomainEvent[]
+  appNotifications                  AppNotification[]
 
   @@index([status])
   @@map("organizations")
@@ -587,46 +618,68 @@ model ProductImage {
 }
 
 model Supplier {
-  id             String          @id @default(cuid())
-  organizationId String
-  code           String
-  name           String
-  contactName    String?
-  phone          String?
-  email          String?
-  address        Json?
-  status         RecordStatus    @default(ACTIVE)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  purchaseOrders PurchaseOrder[]
+  id                        String            @id @default(cuid())
+  organizationId            String
+  code                      String
+  name                      String
+  contactName               String?
+  phone                     String?
+  email                     String?
+  address                   Json?
+  status                    RecordStatus      @default(ACTIVE)
+  portalEnabled             Boolean           @default(false)
+  allowOrderChanges         Boolean?
+  emailNotificationsEnabled Boolean?
+  inAppNotificationsEnabled Boolean?
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+  organization              Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  purchaseOrders            PurchaseOrder[]
+  users                     SupplierUser[]
+  notifications             AppNotification[]
 
   @@unique([organizationId, code])
   @@index([organizationId, status])
   @@map("suppliers")
 }
 
+model SupplierUser {
+  supplierId String
+  userId     String   @unique
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([supplierId, userId])
+  @@index([supplierId])
+  @@map("supplier_users")
+}
+
 model PurchaseOrder {
-  id            String              @id @default(cuid())
-  branchId      String
-  supplierId    String
-  orderNumber   String              @unique
-  status        PurchaseOrderStatus @default(DRAFT)
-  expectedAt    DateTime?
-  approvedById  String?
-  approvedAt    DateTime?
-  subtotal      Decimal             @default(0) @db.Decimal(18, 2)
-  discountTotal Decimal             @default(0) @db.Decimal(18, 2)
-  taxTotal      Decimal             @default(0) @db.Decimal(18, 2)
-  total         Decimal             @default(0) @db.Decimal(18, 2)
-  notes         String?
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  branch        Branch              @relation(fields: [branchId], references: [id])
-  supplier      Supplier            @relation(fields: [supplierId], references: [id])
-  approvedBy    User?               @relation("PurchaseOrderApprover", fields: [approvedById], references: [id], onDelete: SetNull)
-  items         PurchaseOrderItem[]
-  receipts      GoodsReceipt[]
+  id                String                  @id @default(cuid())
+  branchId          String
+  supplierId        String
+  orderNumber       String                  @unique
+  status            PurchaseOrderStatus     @default(DRAFT)
+  expectedAt        DateTime?
+  approvedById      String?
+  approvedAt        DateTime?
+  subtotal          Decimal                 @default(0) @db.Decimal(18, 2)
+  discountTotal     Decimal                 @default(0) @db.Decimal(18, 2)
+  taxTotal          Decimal                 @default(0) @db.Decimal(18, 2)
+  total             Decimal                 @default(0) @db.Decimal(18, 2)
+  notes             String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  branch            Branch                  @relation(fields: [branchId], references: [id])
+  supplier          Supplier                @relation(fields: [supplierId], references: [id])
+  approvedBy        User?                   @relation("PurchaseOrderApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  items             PurchaseOrderItem[]
+  receipts          GoodsReceipt[]
+  supplierResponses SupplierOrderResponse[]
+  supplierShipments SupplierShipment[]
+  supplierInvoices  SupplierInvoice[]
 
   @@index([branchId, status, createdAt])
   @@index([supplierId, createdAt])
@@ -634,22 +687,118 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id               String             @id @default(cuid())
-  purchaseOrderId  String
-  productId        String
-  quantity         Decimal            @db.Decimal(18, 3)
-  receivedQuantity Decimal            @default(0) @db.Decimal(18, 3)
-  unitCost         Decimal            @db.Decimal(18, 2)
-  discount         Decimal            @default(0) @db.Decimal(18, 2)
-  tax              Decimal            @default(0) @db.Decimal(18, 2)
-  lineTotal        Decimal            @db.Decimal(18, 2)
-  purchaseOrder    PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  product          Product            @relation(fields: [productId], references: [id])
-  receiptItems     GoodsReceiptItem[]
+  id                    String                      @id @default(cuid())
+  purchaseOrderId       String
+  productId             String
+  quantity              Decimal                     @db.Decimal(18, 3)
+  receivedQuantity      Decimal                     @default(0) @db.Decimal(18, 3)
+  unitCost              Decimal                     @db.Decimal(18, 2)
+  discount              Decimal                     @default(0) @db.Decimal(18, 2)
+  tax                   Decimal                     @default(0) @db.Decimal(18, 2)
+  lineTotal             Decimal                     @db.Decimal(18, 2)
+  purchaseOrder         PurchaseOrder               @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product               Product                     @relation(fields: [productId], references: [id])
+  receiptItems          GoodsReceiptItem[]
+  supplierResponseLines SupplierOrderResponseLine[]
 
   @@unique([purchaseOrderId, productId])
   @@index([productId])
   @@map("purchase_order_items")
+}
+
+model SupplierOrderResponse {
+  id                 String                       @id @default(cuid())
+  purchaseOrderId    String
+  respondedById      String
+  reviewedById       String?
+  status             SupplierResponseStatus
+  reviewStatus       SupplierResponseReviewStatus @default(NOT_REQUIRED)
+  notes              String?
+  proposedExpectedAt DateTime?
+  respondedAt        DateTime                     @default(now())
+  reviewedAt         DateTime?
+  purchaseOrder      PurchaseOrder                @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  respondedBy        User                         @relation("SupplierResponseAuthor", fields: [respondedById], references: [id])
+  reviewedBy         User?                        @relation("SupplierResponseReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  lines              SupplierOrderResponseLine[]
+
+  @@index([purchaseOrderId, respondedAt])
+  @@index([reviewStatus, respondedAt])
+  @@map("supplier_order_responses")
+}
+
+model SupplierOrderResponseLine {
+  id                  String                @id @default(cuid())
+  responseId          String
+  purchaseOrderItemId String
+  proposedQuantity    Decimal?              @db.Decimal(18, 3)
+  proposedUnitCost    Decimal?              @db.Decimal(18, 2)
+  note                String?
+  response            SupplierOrderResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  purchaseOrderItem   PurchaseOrderItem     @relation(fields: [purchaseOrderItemId], references: [id])
+
+  @@unique([responseId, purchaseOrderItemId])
+  @@index([purchaseOrderItemId])
+  @@map("supplier_order_response_lines")
+}
+
+model SupplierShipment {
+  id              String                 @id @default(cuid())
+  purchaseOrderId String
+  dispatchedById  String
+  status          SupplierShipmentStatus @default(PREPARING)
+  carrier         String?
+  trackingNumber  String?
+  notes           String?
+  expectedArrival DateTime?
+  dispatchedAt    DateTime?
+  deliveredAt     DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  purchaseOrder   PurchaseOrder          @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  dispatchedBy    User                   @relation("SupplierShipmentDispatcher", fields: [dispatchedById], references: [id])
+  invoices        SupplierInvoice[]
+
+  @@index([purchaseOrderId, createdAt])
+  @@index([status, updatedAt])
+  @@map("supplier_shipments")
+}
+
+model SupplierInvoice {
+  id              String            @id @default(cuid())
+  purchaseOrderId String
+  shipmentId      String?
+  invoiceNumber   String
+  fileName        String
+  mimeType        String
+  fileSize        Int
+  fileData        Bytes
+  uploadedAt      DateTime          @default(now())
+  purchaseOrder   PurchaseOrder     @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  shipment        SupplierShipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+
+  @@index([purchaseOrderId, uploadedAt])
+  @@map("supplier_invoices")
+}
+
+model AppNotification {
+  id              String       @id @default(cuid())
+  organizationId  String
+  recipientUserId String
+  supplierId      String?
+  eventType       String
+  title           String
+  message         String
+  actionUrl       String?
+  readAt          DateTime?
+  createdAt       DateTime     @default(now())
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipient       User         @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+  supplier        Supplier?    @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([recipientUserId, readAt, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("app_notifications")
 }
 
 model GoodsReceipt {
@@ -909,23 +1058,31 @@ model SaleItem {
 }
 
 model DiscountRule {
-  id              String                @id @default(cuid())
-  organizationId  String
-  productId       String?
-  name            String
-  type            DiscountType
-  value           Decimal               @db.Decimal(18, 4)
-  minimumQuantity Decimal               @default(1) @db.Decimal(18, 3)
-  maximumQuantity Decimal?              @db.Decimal(18, 3)
-  startsAt        DateTime?
-  endsAt          DateTime?
-  priority        Int                   @default(0)
-  stackable       Boolean               @default(false)
-  status          RecordStatus          @default(ACTIVE)
-  organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  product         Product?              @relation(fields: [productId], references: [id], onDelete: Cascade)
-  applications    DiscountApplication[]
+  id                  String                @id @default(cuid())
+  organizationId      String
+  productId           String?
+  code                String?
+  name                String
+  description         String?
+  type                DiscountType
+  value               Decimal               @db.Decimal(18, 4)
+  minimumQuantity     Decimal               @default(1) @db.Decimal(18, 3)
+  maximumQuantity     Decimal?              @db.Decimal(18, 3)
+  startsAt            DateTime?
+  endsAt              DateTime?
+  priority            Int                   @default(0)
+  stackable           Boolean               @default(false)
+  notifyEmail         Boolean               @default(false)
+  notifyWhatsapp      Boolean               @default(false)
+  promotionNotifiedAt DateTime?
+  status              RecordStatus          @default(ACTIVE)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  organization        Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product             Product?              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  applications        DiscountApplication[]
 
+  @@unique([organizationId, code])
   @@index([organizationId, status, startsAt, endsAt])
   @@index([productId, minimumQuantity])
   @@map("discount_rules")
@@ -975,21 +1132,21 @@ model Receipt {
 }
 
 model Return {
-  id              String       @id @default(cuid())
-  saleId          String
-  refundPaymentId String?
-  returnNumber    String       @unique
-  status          ReturnStatus @default(REQUESTED)
-  reason          String
-  total           Decimal      @default(0) @db.Decimal(18, 2)
-  resolution      ReturnResolution @default(ORIGINAL_METHOD)
-  storeCreditAmount Decimal    @default(0) @db.Decimal(18, 2)
-  loyaltyPointsAwarded Int     @default(0)
-  completedAt     DateTime?
-  createdAt       DateTime     @default(now())
-  sale            Sale         @relation(fields: [saleId], references: [id])
-  refundPayment   Payment?     @relation("RefundPayment", fields: [refundPaymentId], references: [id], onDelete: SetNull)
-  items           ReturnItem[]
+  id                   String           @id @default(cuid())
+  saleId               String
+  refundPaymentId      String?
+  returnNumber         String           @unique
+  status               ReturnStatus     @default(REQUESTED)
+  reason               String
+  total                Decimal          @default(0) @db.Decimal(18, 2)
+  resolution           ReturnResolution @default(ORIGINAL_METHOD)
+  storeCreditAmount    Decimal          @default(0) @db.Decimal(18, 2)
+  loyaltyPointsAwarded Int              @default(0)
+  completedAt          DateTime?
+  createdAt            DateTime         @default(now())
+  sale                 Sale             @relation(fields: [saleId], references: [id])
+  refundPayment        Payment?         @relation("RefundPayment", fields: [refundPaymentId], references: [id], onDelete: SetNull)
+  items                ReturnItem[]
 
   @@index([saleId, createdAt])
   @@map("returns")

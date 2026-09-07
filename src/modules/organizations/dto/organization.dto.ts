@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsEmail,
+  IsBoolean,
   IsHexColor,
   IsObject,
   IsOptional,
@@ -30,6 +31,10 @@ export class BrandingDto {
 }
 
 export class UpdateOrganizationDto {
+  @IsOptional() @IsBoolean() supplierPortalEnabled?: boolean;
+  @IsOptional() @IsBoolean() supplierOrderChangesEnabled?: boolean;
+  @IsOptional() @IsBoolean() supplierEmailNotificationsEnabled?: boolean;
+  @IsOptional() @IsBoolean() supplierInAppNotificationsEnabled?: boolean;
   @IsOptional()
   @IsString()
   @Length(2, 150)

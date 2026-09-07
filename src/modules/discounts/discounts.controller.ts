@@ -24,6 +24,11 @@ import { DiscountsService } from './discounts.service';
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class DiscountsController {
   constructor(private readonly discounts: DiscountsService) {}
+  @Get('dashboard') @RequirePermissions('sales:view') dashboard(
+    @CurrentUser() u: AuthenticatedUser,
+  ) {
+    return this.discounts.dashboard(u.id);
+  }
   @Get() @RequirePermissions('sales:view') list(
     @CurrentUser() u: AuthenticatedUser,
   ) {
@@ -35,6 +40,12 @@ export class DiscountsController {
     @Req() r: Request,
   ) {
     return this.discounts.create(u, d, getSecurityRequestContext(r));
+  }
+  @Get(':id') @RequirePermissions('sales:view') detail(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.discounts.detail(u.id, id);
   }
   @Patch(':id') @RequirePermissions('discounts:manage') update(
     @CurrentUser() u: AuthenticatedUser,

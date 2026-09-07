@@ -64,6 +64,7 @@ const permissions = [
   { key: "warranties:manage", description: "Manage warranties" },
   { key: "notifications:manage", description: "Manage notification delivery" },
   { key: "reports:view", description: "View and export reports" },
+  { key: "supplier-portal:access", description: "Access the assigned supplier portal" },
 ];
 
 async function main() {
@@ -102,6 +103,16 @@ async function main() {
     },
   });
 
+  const supplierRole = await prisma.role.upsert({
+    where: { name: "SUPPLIER" },
+    update: { description: "External supplier portal user", isSystem: true },
+    create: {
+      name: "SUPPLIER",
+      description: "External supplier portal user",
+      isSystem: true,
+    },
+  });
+
   for (const permissionData of permissions) {
     const permission = await prisma.permission.upsert({
       where: {
@@ -126,6 +137,18 @@ async function main() {
         permissionId: permission.id,
       },
     });
+    if (permissionData.key === "supplier-portal:access") {
+      await prisma.rolePermission.upsert({
+        where: {
+          roleId_permissionId: {
+            roleId: supplierRole.id,
+            permissionId: permission.id,
+          },
+        },
+        update: {},
+        create: { roleId: supplierRole.id, permissionId: permission.id },
+      });
+    }
   }
 
   const passwordHash = await hash(password, 12);

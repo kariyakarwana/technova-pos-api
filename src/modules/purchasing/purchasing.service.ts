@@ -10,6 +10,7 @@ import {
   Prisma,
   PurchaseOrderStatus,
   StockMovementType,
+  SupplierShipmentStatus,
 } from '@prisma/client';
 import { createHmac, randomUUID } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
@@ -18,6 +19,7 @@ import type { SecurityRequestContext } from '../../common/security/request';
 import { hashToken } from '../../common/security/token';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { SupplierPortalService } from '../suppliers/supplier-portal.service';
 import {
   CreatePurchaseOrderDto,
   PurchaseQueryDto,
@@ -30,6 +32,7 @@ export class PurchasingService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly supplierPortal: SupplierPortalService,
   ) {}
   private async organizationId(userId: string) {
     const m = await this.prisma.organizationUser.findFirst({
@@ -107,6 +110,23 @@ export class PurchasingService {
         },
         receipts: {
           include: { items: { include: { inventoryUnits: true } } },
+        },
+        supplierResponses: {
+          orderBy: { respondedAt: 'desc' },
+          include: { lines: true },
+        },
+        supplierShipments: { orderBy: { createdAt: 'desc' } },
+        supplierInvoices: {
+          orderBy: { uploadedAt: 'desc' },
+          select: {
+            id: true,
+            shipmentId: true,
+            invoiceNumber: true,
+            fileName: true,
+            mimeType: true,
+            fileSize: true,
+            uploadedAt: true,
+          },
         },
       },
     });
@@ -220,6 +240,7 @@ export class PurchasingService {
       context,
       metadata: { purchaseOrderId: id },
     });
+    await this.supplierPortal.notifyOrderIssued(id);
     return value;
   }
   async receive(
@@ -355,6 +376,18 @@ export class PurchasingService {
               : PurchaseOrderStatus.PARTIALLY_RECEIVED,
           },
         });
+        if (complete) {
+          await tx.supplierShipment.updateMany({
+            where: {
+              purchaseOrderId: po.id,
+              status: SupplierShipmentStatus.DISPATCHED,
+            },
+            data: {
+              status: SupplierShipmentStatus.DELIVERED,
+              deliveredAt: new Date(),
+            },
+          });
+        }
         return {
           receiptId: receipt.id,
           receiptNumber: receipt.receiptNumber,

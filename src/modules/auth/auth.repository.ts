@@ -53,7 +53,7 @@ export class AuthRepository {
 
   async changePassword(userId: string, passwordHash: string) {
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: userId }, data: { passwordHash, passwordChangedAt: new Date(), sessionVersion: { increment: 1 } } }),
+      this.prisma.user.update({ where: { id: userId }, data: { passwordHash, passwordChangedAt: new Date(), mustChangePassword: false, sessionVersion: { increment: 1 } } }),
       this.prisma.refreshSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date(), revokeReason: 'PASSWORD_CHANGED' } }),
     ]);
   }
@@ -172,6 +172,7 @@ export class AuthRepository {
           failedLoginCount: 0,
           lockedUntil: null,
           sessionVersion: { increment: 1 },
+          mustChangePassword: false,
         },
       }),
       this.prisma.securityToken.update({

@@ -13,7 +13,6 @@ import {
 } from 'class-validator';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 export class CreateCustomerDto {
-  @IsString() @Length(1, 40) customerNumber!: string;
   @IsString() @Length(1, 100) firstName!: string;
   @IsOptional() @IsString() @MaxLength(100) lastName?: string;
   @IsOptional() @IsString() @MaxLength(30) phone?: string;
