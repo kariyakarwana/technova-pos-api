@@ -6,23 +6,22 @@ import {
   IsEnum,
   IsOptional,
   IsString,
-  IsStrongPassword,
   Length,
 } from 'class-validator';
+import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 export class CreateUserDto {
   @IsEmail() email!: string;
   @IsString() @Length(2, 120) name!: string;
-  @IsStrongPassword({
-    minLength: 12,
-    minLowercase: 1,
-    minUppercase: 1,
-    minNumbers: 1,
-    minSymbols: 1,
-  })
-  password!: string;
   @IsArray() @ArrayUnique() @IsString({ each: true }) roleIds!: string[];
   @IsArray() @ArrayUnique() @IsString({ each: true }) branchIds!: string[];
+}
+
+export class UserQueryDto extends PaginationDto {
+  @IsOptional() @IsString() search?: string;
+  @IsOptional() @IsString() branchId?: string;
+  @IsOptional() @IsString() roleId?: string;
+  @IsOptional() @IsEnum(UserStatus) status?: UserStatus;
 }
 
 export class UpdateUserAccessDto {

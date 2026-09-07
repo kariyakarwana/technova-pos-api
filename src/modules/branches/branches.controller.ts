@@ -27,9 +27,8 @@ export class BranchesController {
   constructor(private readonly branches: BranchesService) {}
 
   @Get()
-  @RequirePermissions('branches:view')
   list(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationDto) {
-    return this.branches.list(user.id, query);
+    return this.branches.list(user, query);
   }
 
   @Post()

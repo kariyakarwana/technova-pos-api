@@ -1,9 +1,10 @@
-import { PaymentMethod } from '@prisma/client';
+import { PaymentMethod, ReturnResolution, ReturnStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsDateString,
   IsEnum,
   IsNumber,
   IsOptional,
@@ -26,6 +27,7 @@ export class CreateReturnDto {
   @IsString() reason!: string;
   @IsOptional() @IsEnum(PaymentMethod) refundMethod?: PaymentMethod;
   @IsOptional() @IsString() refundReference?: string;
+  @IsOptional() @IsEnum(ReturnResolution) resolution?: ReturnResolution;
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
@@ -34,4 +36,11 @@ export class CreateReturnDto {
 }
 export class ReturnQueryDto extends PaginationDto {
   @IsOptional() @IsString() saleId?: string;
+  @IsOptional() @IsString() branchId?: string;
+  @IsOptional() @IsString() customerPhone?: string;
+  @IsOptional() @IsEnum(ReturnStatus) status?: ReturnStatus;
+  @IsOptional() @IsEnum(ReturnResolution) resolution?: ReturnResolution;
+  @IsOptional() @IsString() search?: string;
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
 }

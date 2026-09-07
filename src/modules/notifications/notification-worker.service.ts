@@ -43,9 +43,157 @@ export class NotificationWorkerService
     if (this.running) return;
     this.running = true;
     try {
+      await this.promotionLaunches();
       await this.notifications.processPending();
     } finally {
       this.running = false;
+    }
+  }
+
+  private async promotionLaunches() {
+    const now = new Date();
+    const promotions = await this.prisma.discountRule.findMany({
+      where: {
+        status: RecordStatus.ACTIVE,
+        promotionNotifiedAt: null,
+        OR: [{ startsAt: null }, { startsAt: { lte: now } }],
+        AND: [
+          { OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
+          { OR: [{ notifyEmail: true }, { notifyWhatsapp: true }] },
+        ],
+      },
+      include: { organization: true, product: true },
+    });
+    for (const promotion of promotions) {
+      const customers = await this.prisma.customer.findMany({
+        where: {
+          organizationId: promotion.organizationId,
+          status: RecordStatus.ACTIVE,
+          OR: [{ email: { not: null } }, { phone: { not: null } }],
+        },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+        },
+      });
+      const [templates, preferences] = await Promise.all([
+        this.prisma.notificationTemplate.findMany({
+          where: {
+            organizationId: promotion.organizationId,
+            eventType: 'PROMOTION_STARTED',
+          },
+        }),
+        this.prisma.notificationPreference.findMany({
+          where: {
+            customerId: { in: customers.map((customer) => customer.id) },
+            eventType: 'PROMOTION_STARTED',
+          },
+        }),
+      ]);
+      const templateByChannel = new Map(
+        templates.map((template) => [template.channel, template]),
+      );
+      const disabled = new Set(
+        preferences
+          .filter((preference) => !preference.enabled)
+          .map(
+            (preference) => `${preference.customerId}:${preference.channel}`,
+          ),
+      );
+      const offer =
+        promotion.type === 'PERCENTAGE'
+          ? `${Number(promotion.value)}% off`
+          : promotion.type === 'FIXED_AMOUNT'
+            ? `LKR ${Number(promotion.value).toLocaleString()} off`
+            : `LKR ${Number(promotion.value).toLocaleString()} promotional price`;
+      const payload = {
+        companyName: promotion.organization.name,
+        promotionId: promotion.id,
+        promotionName: promotion.name,
+        promotionCode: promotion.code ?? '',
+        description: promotion.description ?? '',
+        offer,
+        product: promotion.product?.name ?? 'eligible products',
+        startsAt: promotion.startsAt?.toISOString() ?? now.toISOString(),
+        endsAt: promotion.endsAt?.toISOString() ?? 'while stocks last',
+      };
+      const messages: Array<{
+        templateId?: string;
+        channel: NotificationChannel;
+        recipient: string;
+        subject?: string;
+        body: string;
+        idempotencyKey: string;
+      }> = [];
+      for (const customer of customers) {
+        const customerName =
+          `${customer.firstName} ${customer.lastName ?? ''}`.trim();
+        for (const channel of [
+          NotificationChannel.EMAIL,
+          NotificationChannel.WHATSAPP,
+        ]) {
+          const enabled =
+            channel === NotificationChannel.EMAIL
+              ? promotion.notifyEmail
+              : promotion.notifyWhatsapp;
+          const recipient =
+            channel === NotificationChannel.EMAIL
+              ? customer.email
+              : customer.phone;
+          const template = templateByChannel.get(channel);
+          if (
+            !enabled ||
+            !recipient ||
+            disabled.has(`${customer.id}:${channel}`) ||
+            (template && template.status !== RecordStatus.ACTIVE)
+          )
+            continue;
+          const customerPayload = { ...payload, customerName };
+          messages.push({
+            templateId: template?.id,
+            channel,
+            recipient,
+            subject:
+              channel === NotificationChannel.EMAIL
+                ? template?.subjectTemplate
+                  ? this.render(template.subjectTemplate, customerPayload)
+                  : `${promotion.name} is now available at ${promotion.organization.name}`
+                : undefined,
+            body: template
+              ? this.render(template.bodyTemplate, customerPayload)
+              : channel === NotificationChannel.EMAIL
+                ? `<p>Hello ${customerName},</p><p><strong>${promotion.name}</strong> is now available at ${promotion.organization.name}.</p><p>${offer} on ${payload.product}.</p>${promotion.description ? `<p>${promotion.description}</p>` : ''}${promotion.code ? `<p>Promotion code: <strong>${promotion.code}</strong></p>` : ''}`
+                : `Hello ${customerName}! ${promotion.name} is now available at ${promotion.organization.name}: ${offer} on ${payload.product}.${promotion.code ? ` Code: ${promotion.code}.` : ''}${promotion.description ? ` ${promotion.description}` : ''}`,
+            idempotencyKey: `promotion-start:${promotion.id}:${customer.id}:${channel}`,
+          });
+        }
+      }
+      await this.prisma.$transaction(async (transaction) => {
+        const event = await transaction.domainEvent.create({
+          data: {
+            organizationId: promotion.organizationId,
+            aggregateType: 'PROMOTION',
+            aggregateId: promotion.id,
+            eventType: 'PROMOTION_STARTED',
+            payload,
+          },
+        });
+        if (messages.length)
+          await transaction.notificationOutbox.createMany({
+            data: messages.map((message) => ({
+              ...message,
+              domainEventId: event.id,
+            })),
+            skipDuplicates: true,
+          });
+        await transaction.discountRule.update({
+          where: { id: promotion.id },
+          data: { promotionNotifiedAt: now },
+        });
+      });
     }
   }
   private async generateOperationalAlerts() {

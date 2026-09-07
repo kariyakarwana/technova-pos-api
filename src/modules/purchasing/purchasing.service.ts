@@ -4,19 +4,22 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   InventoryUnitStatus,
   Prisma,
   PurchaseOrderStatus,
   StockMovementType,
+  SupplierShipmentStatus,
 } from '@prisma/client';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { paginate } from '../../common/dto/pagination.dto';
 import type { SecurityRequestContext } from '../../common/security/request';
-import { generateRawToken, hashToken } from '../../common/security/token';
+import { hashToken } from '../../common/security/token';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { SupplierPortalService } from '../suppliers/supplier-portal.service';
 import {
   CreatePurchaseOrderDto,
   PurchaseQueryDto,
@@ -28,6 +31,8 @@ export class PurchasingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly config: ConfigService,
+    private readonly supplierPortal: SupplierPortalService,
   ) {}
   private async organizationId(userId: string) {
     const m = await this.prisma.organizationUser.findFirst({
@@ -38,11 +43,40 @@ export class PurchasingService {
   }
   async list(userId: string, q: PurchaseQueryDto) {
     const organizationId = await this.organizationId(userId);
+    if (
+      q.minAmount !== undefined &&
+      q.maxAmount !== undefined &&
+      q.minAmount > q.maxAmount
+    ) {
+      throw new BadRequestException(
+        'Minimum amount cannot be greater than maximum amount.',
+      );
+    }
     const where: Prisma.PurchaseOrderWhereInput = {
       branch: { organizationId },
       branchId: q.branchId,
       supplierId: q.supplierId,
+      orderNumber: q.orderNumber
+        ? { contains: q.orderNumber, mode: 'insensitive' }
+        : undefined,
       status: q.status as PurchaseOrderStatus | undefined,
+      total:
+        q.minAmount !== undefined || q.maxAmount !== undefined
+          ? { gte: q.minAmount, lte: q.maxAmount }
+          : undefined,
+      createdAt:
+        q.from || q.to
+          ? {
+              gte: q.from ? new Date(q.from) : undefined,
+              lte: q.to ? new Date(q.to) : undefined,
+            }
+          : undefined,
+      OR: q.search
+        ? [
+            { orderNumber: { contains: q.search, mode: 'insensitive' } },
+            { supplier: { name: { contains: q.search, mode: 'insensitive' } } },
+          ]
+        : undefined,
     };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.purchaseOrder.findMany({
@@ -74,11 +108,49 @@ export class PurchasingService {
             },
           },
         },
-        receipts: { include: { items: true } },
+        receipts: {
+          include: { items: { include: { inventoryUnits: true } } },
+        },
+        supplierResponses: {
+          orderBy: { respondedAt: 'desc' },
+          include: { lines: true },
+        },
+        supplierShipments: { orderBy: { createdAt: 'desc' } },
+        supplierInvoices: {
+          orderBy: { uploadedAt: 'desc' },
+          select: {
+            id: true,
+            shipmentId: true,
+            invoiceNumber: true,
+            fileName: true,
+            mimeType: true,
+            fileSize: true,
+            uploadedAt: true,
+          },
+        },
       },
     });
     if (!value) throw new NotFoundException('Purchase order not found.');
-    return value;
+    return {
+      ...value,
+      receipts: value.receipts.map((receipt) => ({
+        ...receipt,
+        labels: receipt.items.flatMap((item) =>
+          item.inventoryUnits.flatMap((unit) => {
+            const token = this.qrToken(unit.id, unit.qrVersion);
+            return hashToken(token) === unit.qrCodeHash
+              ? [{ serialNumber: unit.serialNumber, qrPayload: this.qrPayload(token) }]
+              : [];
+          }),
+        ),
+        hasLegacyLabels: receipt.items.some((item) =>
+          item.inventoryUnits.some((unit) => {
+            const token = this.qrToken(unit.id, unit.qrVersion);
+            return hashToken(token) !== unit.qrCodeHash;
+          }),
+        ),
+      })),
+    };
   }
   async create(
     actor: AuthenticatedUser,
@@ -168,6 +240,7 @@ export class PurchasingService {
       context,
       metadata: { purchaseOrderId: id },
     });
+    await this.supplierPortal.notifyOrderIssued(id);
     return value;
   }
   async receive(
@@ -214,8 +287,9 @@ export class PurchasingService {
         input,
         item,
         qr: (input.serialNumbers ?? []).map((serialNumber) => {
-          const token = generateRawToken();
-          return { serialNumber, token, tokenHash: hashToken(token) };
+          const unitId = randomUUID();
+          const token = this.qrToken(unitId, 1);
+          return { unitId, serialNumber, token, tokenHash: hashToken(token) };
         }),
       };
     });
@@ -273,6 +347,7 @@ export class PurchasingService {
           for (const qr of row.qr) {
             await tx.inventoryUnit.create({
               data: {
+                id: qr.unitId,
                 branchId: po.branchId,
                 productId: row.item.productId,
                 goodsReceiptItemId: ri.id,
@@ -283,7 +358,7 @@ export class PurchasingService {
             });
             labels.push({
               serialNumber: qr.serialNumber,
-              qrPayload: `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/qr/product/${qr.token}`,
+              qrPayload: this.qrPayload(qr.token),
             });
           }
         }
@@ -301,6 +376,18 @@ export class PurchasingService {
               : PurchaseOrderStatus.PARTIALLY_RECEIVED,
           },
         });
+        if (complete) {
+          await tx.supplierShipment.updateMany({
+            where: {
+              purchaseOrderId: po.id,
+              status: SupplierShipmentStatus.DISPATCHED,
+            },
+            data: {
+              status: SupplierShipmentStatus.DELIVERED,
+              deliveredAt: new Date(),
+            },
+          });
+        }
         return {
           receiptId: receipt.id,
           receiptNumber: receipt.receiptNumber,
@@ -324,6 +411,38 @@ export class PurchasingService {
         );
       throw error;
     }
+  }
+  async reissueReceiptLabels(userId: string, orderId: string, receiptId: string) {
+    const organizationId = await this.organizationId(userId);
+    const receipt = await this.prisma.goodsReceipt.findFirst({
+      where: { id: receiptId, purchaseOrderId: orderId, branch: { organizationId } },
+      include: { items: { include: { inventoryUnits: true } } },
+    });
+    if (!receipt) throw new NotFoundException('Goods receipt not found.');
+    const labels: Array<{ serialNumber: string; qrPayload: string }> = [];
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of receipt.items) {
+        for (const unit of item.inventoryUnits) {
+          const version = unit.qrVersion + 1;
+          const token = this.qrToken(unit.id, version);
+          await tx.inventoryUnit.update({ where: { id: unit.id }, data: { qrVersion: version, qrCodeHash: hashToken(token) } });
+          labels.push({ serialNumber: unit.serialNumber, qrPayload: this.qrPayload(token) });
+        }
+      }
+    });
+    return { receiptId, labels };
+  }
+  private qrToken(unitId: string, version: number) {
+    const value = `${unitId}.${version}`;
+    const secret =
+      this.config.get<string>('QR_LABEL_SECRET') ??
+      this.config.get<string>('AUTH_JWT_ACCESS_SECRET') ??
+      this.config.getOrThrow<string>('JWT_ACCESS_PRIVATE_KEY');
+    const signature = createHmac('sha256', secret).update(value).digest('base64url');
+    return `${value}.${signature}`;
+  }
+  private qrPayload(token: string) {
+    return `${this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3000'}/qr/product/${token}`;
   }
   private async assertBranchSupplier(
     org: string,

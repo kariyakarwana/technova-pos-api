@@ -29,6 +29,12 @@ export class SuppliersController {
   ) {
     return this.suppliers.list(u.id, q);
   }
+  @Get(':id') @RequirePermissions('suppliers:view') detail(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.suppliers.detail(u.id, id);
+  }
   @Post() @RequirePermissions('suppliers:manage') create(
     @CurrentUser() u: AuthenticatedUser,
     @Body() d: CreateSupplierDto,

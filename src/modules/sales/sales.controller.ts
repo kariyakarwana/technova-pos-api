@@ -15,7 +15,7 @@ import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { RequirePermissions } from '../../common/auth/permissions.decorator';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
 import { getSecurityRequestContext } from '../../common/security/request';
-import { CreateSaleDto, SaleQueryDto } from './dto/sale.dto';
+import { CreateSaleDto, SaleQueryDto, SaleQuoteDto } from './dto/sale.dto';
 import { SalesService } from './sales.service';
 @Controller('sales')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -26,6 +26,25 @@ export class SalesController {
     @Query() q: SaleQueryDto,
   ) {
     return this.sales.list(u.id, q);
+  }
+  @Get('pos-context') @RequirePermissions('sales:manage') posContext(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query('branchId') branchId: string,
+  ) {
+    return this.sales.posContext(u, branchId);
+  }
+  @Get('cashiers') @RequirePermissions('sales:view') cashiers(
+    @CurrentUser() u: AuthenticatedUser,
+  ) {
+    return this.sales.cashiers(u.id);
+  }
+  @Get('return-filter-options')
+  @RequirePermissions('sales:view')
+  returnFilterOptions(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.sales.returnFilterOptions(u.id, branchId);
   }
   @Get(':id') @RequirePermissions('sales:view') detail(
     @CurrentUser() u: AuthenticatedUser,
@@ -39,5 +58,12 @@ export class SalesController {
     @Req() r: Request,
   ) {
     return this.sales.create(u, d, getSecurityRequestContext(r));
+  }
+
+  @Post('quote') @RequirePermissions('sales:manage') quote(
+    @CurrentUser() u: AuthenticatedUser,
+    @Body() d: SaleQuoteDto,
+  ) {
+    return this.sales.quote(u.id, d.items);
   }
 }

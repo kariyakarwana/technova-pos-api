@@ -27,9 +27,13 @@ export class BranchesService {
     return membership.organizationId;
   }
 
-  async list(userId: string, query: PaginationDto) {
-    const organizationId = await this.organizationId(userId);
-    const where = { organizationId };
+  async list(user: AuthenticatedUser, query: PaginationDto) {
+    const organizationId = await this.organizationId(user.id);
+    const canViewAll = user.permissions.includes('branches:view');
+    const where: Prisma.BranchWhereInput = {
+      organizationId,
+      users: canViewAll ? undefined : { some: { userId: user.id } },
+    };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.branch.findMany({
         where,

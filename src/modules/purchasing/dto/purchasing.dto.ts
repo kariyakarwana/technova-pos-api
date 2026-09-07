@@ -46,7 +46,13 @@ export class CreatePurchaseOrderDto {
 export class PurchaseQueryDto extends PaginationDto {
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() supplierId?: string;
+  @IsOptional() @IsString() orderNumber?: string;
   @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsString() search?: string;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) minAmount?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) maxAmount?: number;
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
 }
 export class ReceiptItemDto {
   @IsString() purchaseOrderItemId!: string;

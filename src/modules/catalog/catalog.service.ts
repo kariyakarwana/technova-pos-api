@@ -164,6 +164,7 @@ export class CatalogService {
               branch: { select: { id: true, code: true, name: true } },
             },
           },
+          images: { orderBy: { position: 'asc' } },
         },
       }),
       this.prisma.product.count({ where }),
@@ -179,6 +180,7 @@ export class CatalogService {
         brand: true,
         stockLevels: { include: { branch: true } },
         warrantyPolicies: true,
+        images: { orderBy: { position: 'asc' } },
       },
     });
     if (!product) throw new NotFoundException('Product not found.');
@@ -198,10 +200,21 @@ export class CatalogService {
     return this.unique(async () => {
       const value = await this.prisma.product.create({
         data: {
-          ...dto,
+          name: dto.name,
+          description: dto.description,
+          categoryId: dto.categoryId,
+          brandId: dto.brandId,
+          costPrice: dto.costPrice,
+          sellingPrice: dto.sellingPrice,
+          taxRate: dto.taxRate,
+          trackSerials: dto.trackSerials,
+          reorderLevel: dto.reorderLevel,
           sku: dto.sku.trim().toUpperCase(),
           barcode: dto.barcode?.trim() || null,
           organizationId,
+          images: dto.imageUrls?.length
+            ? { create: dto.imageUrls.map((url, position) => ({ url, position })) }
+            : undefined,
         },
       });
       await this.audit.record({
@@ -226,12 +239,21 @@ export class CatalogService {
       dto.categoryId,
       dto.brandId,
     );
+    const { imageUrls, ...productData } = dto;
     const value = await this.unique(
-      () =>
-        this.prisma.product.update({
+      () => this.prisma.$transaction(async (tx) => {
+        const product = await tx.product.update({
           where: { id },
-          data: { ...dto, barcode: dto.barcode?.trim() || undefined },
-        }),
+          data: { ...productData, barcode: dto.barcode?.trim() || undefined },
+        });
+        if (imageUrls) {
+          await tx.productImage.deleteMany({ where: { productId: id } });
+          if (imageUrls.length) await tx.productImage.createMany({
+            data: imageUrls.map((url, position) => ({ productId: id, url, position })),
+          });
+        }
+        return product;
+      }),
       'Barcode already exists.',
     );
     await this.audit.record({

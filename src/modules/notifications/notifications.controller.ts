@@ -15,6 +15,7 @@ import { RequirePermissions } from '../../common/auth/permissions.decorator';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
 import {
   CreateTemplateDto,
+  AppNotificationQueryDto,
   OutboxQueryDto,
   PreferenceDto,
   UpdateTemplateDto,
@@ -24,10 +25,30 @@ import { NotificationsService } from './notifications.service';
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
+  @Get('in-app')
+  inApp(
+    @CurrentUser() u: AuthenticatedUser,
+    @Query() q: AppNotificationQueryDto,
+  ) {
+    return this.notifications.appNotifications(u.id, q);
+  }
+  @Patch('in-app/read-all')
+  readAll(@CurrentUser() u: AuthenticatedUser) {
+    return this.notifications.readAllAppNotifications(u.id);
+  }
+  @Patch('in-app/:id/read')
+  read(@CurrentUser() u: AuthenticatedUser, @Param('id') id: string) {
+    return this.notifications.readAppNotification(u.id, id);
+  }
   @Get('templates') @RequirePermissions('notifications:manage') templates(
     @CurrentUser() u: AuthenticatedUser,
   ) {
     return this.notifications.templates(u.id);
+  }
+  @Get('templates/catalog')
+  @RequirePermissions('notifications:manage')
+  templateCatalog() {
+    return this.notifications.templateCatalog();
   }
   @Post('templates') @RequirePermissions('notifications:manage') create(
     @CurrentUser() u: AuthenticatedUser,
@@ -58,5 +79,10 @@ export class NotificationsController {
   @RequirePermissions('notifications:manage')
   process() {
     return this.notifications.processPending();
+  }
+  @Get('provider-status')
+  @RequirePermissions('notifications:manage')
+  providerStatus() {
+    return this.notifications.providerStatus();
   }
 }

@@ -41,6 +41,7 @@ export class InventoryService {
       branch: { organizationId },
       branchId: q.branchId,
       productId: q.productId,
+      product: q.search ? { name: { contains: q.search, mode: 'insensitive' as const } } : undefined,
     };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.stockLevel.findMany({
@@ -71,6 +72,7 @@ export class InventoryService {
       branch: { organizationId },
       branchId: q.branchId,
       productId: q.productId,
+      product: q.search ? { name: { contains: q.search, mode: 'insensitive' as const } } : undefined,
     };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.stockMovement.findMany({
@@ -211,6 +213,36 @@ export class InventoryService {
     });
     return transfer;
   }
+  async transfers(userId: string, q: InventoryQueryDto) {
+    const organizationId = await this.organizationId(userId);
+    const where = {
+      sourceBranch: { organizationId },
+      status: q.status,
+      ...(q.branchId && q.direction === 'OUTGOING' ? { sourceBranchId: q.branchId } : {}),
+      ...(q.branchId && q.direction === 'INCOMING' ? { destinationBranchId: q.branchId } : {}),
+      OR: q.branchId && (!q.direction || q.direction === 'ALL') ? [{ sourceBranchId: q.branchId }, { destinationBranchId: q.branchId }] : undefined,
+    };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.stockTransfer.findMany({ where, skip: q.skip, take: q.pageSize, include: { sourceBranch: true, destinationBranch: true, _count: { select: { items: true } } }, orderBy: { createdAt: 'desc' } }),
+      this.prisma.stockTransfer.count({ where }),
+    ]);
+    return paginate(data, total, q);
+  }
+  async units(userId: string, q: InventoryQueryDto) {
+    const organizationId = await this.organizationId(userId);
+    const where = { branch: { organizationId }, branchId: q.branchId, productId: q.productId };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.inventoryUnit.findMany({ where, skip: q.skip, take: q.pageSize, include: { branch: { select: { id: true, code: true, name: true } }, product: { select: { id: true, sku: true, name: true } }, warranty: { select: { id: true, status: true, activatedAt: true, endsAt: true } } }, orderBy: { createdAt: 'desc' } }),
+      this.prisma.inventoryUnit.count({ where }),
+    ]);
+    return paginate(data, total, q);
+  }
+  async unit(userId: string, id: string) {
+    const organizationId = await this.organizationId(userId);
+    const unit = await this.prisma.inventoryUnit.findFirst({ where: { id, branch: { organizationId } }, include: { branch: true, product: true, goodsReceiptItem: { include: { goodsReceipt: true } }, saleItem: { include: { sale: true } }, warranty: { include: { warrantyPolicy: true, events: true } }, movements: { orderBy: { createdAt: 'desc' } } } });
+    if (!unit) throw new NotFoundException('Serialized inventory unit not found.');
+    return unit;
+  }
   async dispatch(
     actor: AuthenticatedUser,
     id: string,
@@ -281,6 +313,7 @@ export class InventoryService {
                 userId: actor.id,
                 type: StockMovementType.TRANSFER_OUT,
                 quantity: 1,
+                reason: transfer.notes,
                 referenceType: 'STOCK_TRANSFER',
                 referenceId: id,
               },
@@ -294,6 +327,7 @@ export class InventoryService {
               userId: actor.id,
               type: StockMovementType.TRANSFER_OUT,
               quantity,
+              reason: transfer.notes,
               referenceType: 'STOCK_TRANSFER',
               referenceId: id,
             },
@@ -363,6 +397,7 @@ export class InventoryService {
                 userId: actor.id,
                 type: StockMovementType.TRANSFER_IN,
                 quantity: 1,
+                reason: transfer.notes,
                 referenceType: 'STOCK_TRANSFER',
                 referenceId: id,
               },
@@ -376,6 +411,7 @@ export class InventoryService {
               userId: actor.id,
               type: StockMovementType.TRANSFER_IN,
               quantity,
+              reason: transfer.notes,
               referenceType: 'STOCK_TRANSFER',
               referenceId: id,
             },

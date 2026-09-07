@@ -6,6 +6,9 @@ import {
   HttpStatus,
   Post,
   Query,
+  Param,
+  Delete,
+  UseGuards,
   Req,
   Res,
 } from '@nestjs/common';
@@ -15,11 +18,15 @@ import { getSecurityRequestContext } from '../../common/security/request';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import {
+  ChangePasswordDto,
   EmailDto,
   ResetPasswordDto,
   VerifyEmailDto,
   VerifyResetOtpDto,
 } from './dto/auth.dto';
+import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
+import { CurrentUser } from '../../common/auth/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 
 const REFRESH_COOKIE = 'technova_refresh';
 const REFRESH_COOKIE_OPTIONS = {
@@ -173,5 +180,23 @@ export class AuthController {
   private bearerToken(request: Request): string | undefined {
     const value = request.get('authorization');
     return value?.startsWith('Bearer ') ? value.slice(7) : undefined;
+  }
+
+  @Get('sessions')
+  @UseGuards(JwtAuthGuard)
+  sessions(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.sessions(user.id);
+  }
+
+  @Delete('sessions/:id')
+  @UseGuards(JwtAuthGuard)
+  revokeSession(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.authService.revokeSession(user.id, id);
+  }
+
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  changePassword(@CurrentUser() user: AuthenticatedUser, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(user.id, dto.currentPassword, dto.newPassword);
   }
 }

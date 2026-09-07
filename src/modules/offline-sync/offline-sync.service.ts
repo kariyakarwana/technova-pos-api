@@ -14,6 +14,7 @@ import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateSaleDto } from '../sales/dto/sale.dto';
 import { SalesService } from '../sales/sales.service';
 import { OfflineSyncBatchDto } from './dto/offline-sync.dto';
+import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
 
 type SyncBatchWithOperations = Prisma.OfflineSyncBatchGetPayload<{
   include: { operations: true };
@@ -186,5 +187,20 @@ export class OfflineSyncService {
   }
   private json(value: unknown): Prisma.InputJsonValue {
     return value as Prisma.InputJsonValue;
+  }
+
+  async list(userId: string, query: PaginationDto) {
+    const where = { userId };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.offlineSyncBatch.findMany({
+        where,
+        skip: query.skip,
+        take: query.pageSize,
+        include: { operations: { orderBy: { createdAt: 'asc' } } },
+        orderBy: { receivedAt: 'desc' },
+      }),
+      this.prisma.offlineSyncBatch.count({ where }),
+    ]);
+    return paginate(data, total, query);
   }
 }

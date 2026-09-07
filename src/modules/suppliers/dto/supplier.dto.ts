@@ -1,6 +1,7 @@
 import { RecordStatus } from '@prisma/client';
 import {
   IsEmail,
+  IsBoolean,
   IsEnum,
   IsObject,
   IsOptional,
@@ -15,6 +16,10 @@ export class CreateSupplierDto {
   @IsOptional() @IsString() @MaxLength(30) phone?: string;
   @IsOptional() @IsEmail() email?: string;
   @IsOptional() @IsObject() address?: Record<string, string>;
+  @IsOptional() @IsBoolean() portalEnabled?: boolean;
+  @IsOptional() @IsBoolean() allowOrderChanges?: boolean;
+  @IsOptional() @IsBoolean() emailNotificationsEnabled?: boolean;
+  @IsOptional() @IsBoolean() inAppNotificationsEnabled?: boolean;
 }
 export class UpdateSupplierDto {
   @IsOptional() @IsString() @Length(2, 160) name?: string;
@@ -23,4 +28,8 @@ export class UpdateSupplierDto {
   @IsOptional() @IsEmail() email?: string;
   @IsOptional() @IsObject() address?: Record<string, string>;
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
+  @IsOptional() @IsBoolean() portalEnabled?: boolean;
+  @IsOptional() @IsBoolean() allowOrderChanges?: boolean;
+  @IsOptional() @IsBoolean() emailNotificationsEnabled?: boolean;
+  @IsOptional() @IsBoolean() inAppNotificationsEnabled?: boolean;
 }

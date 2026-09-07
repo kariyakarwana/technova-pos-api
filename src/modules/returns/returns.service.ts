@@ -11,6 +11,8 @@ import {
   PaymentMethod,
   PaymentStatus,
   ReturnStatus,
+  ReturnResolution,
+  Prisma,
   SaleStatus,
   StockMovementType,
   WarrantyStatus,
@@ -37,7 +39,7 @@ export class ReturnsService {
   }
   async list(userId: string, q: ReturnQueryDto) {
     const organizationId = await this.org(userId);
-    const where = { sale: { branch: { organizationId } }, saleId: q.saleId };
+    const where = this.historyWhere(organizationId, q);
     const [data, total] = await this.prisma.$transaction([
       this.prisma.return.findMany({
         where,
@@ -45,7 +47,20 @@ export class ReturnsService {
         take: q.pageSize,
         orderBy: { createdAt: 'desc' },
         include: {
-          sale: { select: { invoiceNumber: true } },
+          sale: {
+            select: {
+              invoiceNumber: true,
+              customer: {
+                select: {
+                  customerNumber: true,
+                  firstName: true,
+                  lastName: true,
+                  phone: true,
+                },
+              },
+              branch: { select: { code: true, name: true } },
+            },
+          },
           items: true,
           refundPayment: true,
         },
@@ -53,6 +68,108 @@ export class ReturnsService {
       this.prisma.return.count({ where }),
     ]);
     return paginate(data, total, q);
+  }
+  async historyCsv(userId: string, q: ReturnQueryDto) {
+    const organizationId = await this.org(userId);
+    const rows = await this.prisma.return.findMany({
+      where: this.historyWhere(organizationId, q),
+      include: {
+        sale: { include: { customer: true, branch: true } },
+        items: true,
+        refundPayment: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const values = rows.map((row) => [
+      row.returnNumber,
+      row.sale.invoiceNumber,
+      row.createdAt.toISOString(),
+      row.sale.branch.name,
+      row.sale.customer
+        ? `${row.sale.customer.firstName} ${row.sale.customer.lastName ?? ''}`.trim()
+        : 'Walk-in',
+      row.sale.customer?.phone ?? '',
+      row.reason,
+      [...new Set(row.items.map((item) => item.condition ?? ''))].join(', '),
+      row.resolution,
+      Number(row.total),
+      row.refundPayment?.method ?? '',
+      row.status,
+    ]);
+    return [
+      ['Return', 'Invoice', 'Date', 'Branch', 'Customer', 'Phone', 'Reason', 'Condition', 'Resolution', 'Amount', 'Refund Method', 'Status'],
+      ...values,
+    ].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\r\n');
+  }
+  private historyWhere(
+    organizationId: string,
+    q: ReturnQueryDto,
+  ): Prisma.ReturnWhereInput {
+    return {
+      saleId: q.saleId,
+      status: q.status,
+      resolution: q.resolution,
+      createdAt:
+        q.from || q.to
+          ? {
+              gte: q.from ? new Date(q.from) : undefined,
+              lte: q.to ? new Date(q.to) : undefined,
+            }
+          : undefined,
+      sale: {
+        branch: { organizationId },
+        branchId: q.branchId,
+        customer: q.customerPhone
+          ? { phone: { contains: q.customerPhone } }
+          : undefined,
+      },
+      OR: q.search
+        ? [
+            { returnNumber: { contains: q.search, mode: 'insensitive' } },
+            { reason: { contains: q.search, mode: 'insensitive' } },
+            {
+              sale: {
+                invoiceNumber: { contains: q.search, mode: 'insensitive' },
+              },
+            },
+            {
+              sale: {
+                customer: {
+                  firstName: { contains: q.search, mode: 'insensitive' },
+                },
+              },
+            },
+            {
+              sale: {
+                customer: {
+                  lastName: { contains: q.search, mode: 'insensitive' },
+                },
+              },
+            },
+          ]
+        : undefined,
+    };
+  }
+  async summary(userId: string) {
+    const organizationId = await this.org(userId);
+    const where = { sale: { branch: { organizationId } } };
+    const [totals, byResolution, byReason, damagedItems, completedSales] =
+      await Promise.all([
+        this.prisma.return.aggregate({ where, _count: true, _sum: { total: true } }),
+        this.prisma.return.groupBy({ by: ['resolution'], where, _count: true, _sum: { total: true } }),
+        this.prisma.return.groupBy({ by: ['reason'], where, _count: true, orderBy: { _count: { reason: 'desc' } }, take: 10 }),
+        this.prisma.returnItem.count({ where: { return: where, condition: { contains: 'DAMAGED', mode: 'insensitive' } } }),
+        this.prisma.sale.count({ where: { branch: { organizationId }, status: { in: [SaleStatus.COMPLETED, SaleStatus.PARTIALLY_REFUNDED, SaleStatus.REFUNDED] } } }),
+      ]);
+    const returnCount = totals._count;
+    return {
+      totalAmount: Number(totals._sum.total ?? 0),
+      returnCount,
+      returnRate: completedSales ? (returnCount / completedSales) * 100 : 0,
+      damagedItems,
+      byResolution: byResolution.map((item) => ({ resolution: item.resolution, count: item._count, amount: Number(item._sum.total ?? 0) })),
+      byReason: byReason.map((item) => ({ reason: item.reason, count: item._count })),
+    };
   }
   async detail(userId: string, id: string) {
     const organizationId = await this.org(userId);
@@ -139,7 +256,10 @@ export class ReturnsService {
     const total = prepared.reduce((s, r) => s + r.refund, 0),
       creditOffset = Math.min(total, Number(sale.balanceDue)),
       cashRefund = total - creditOffset;
-    if (cashRefund > 0 && !dto.refundMethod)
+    const resolution = dto.resolution ?? ReturnResolution.ORIGINAL_METHOD;
+    if (resolution !== ReturnResolution.ORIGINAL_METHOD && !sale.customerId)
+      throw new BadRequestException('Store credit, points and exchanges require a registered customer.');
+    if (cashRefund > 0 && resolution === ReturnResolution.ORIGINAL_METHOD && !dto.refundMethod)
       throw new BadRequestException(
         'A refund method is required for the refundable paid amount.',
       );
@@ -147,7 +267,7 @@ export class ReturnsService {
       throw new BadRequestException('Credit is not a refund payment method.');
     const result = await this.prisma.$transaction(async (tx) => {
       let refundPaymentId: string | undefined;
-      if (cashRefund > 0) {
+      if (cashRefund > 0 && resolution === ReturnResolution.ORIGINAL_METHOD) {
         const payment = await tx.payment.create({
           data: {
             saleId: sale.id,
@@ -168,9 +288,25 @@ export class ReturnsService {
           status: ReturnStatus.COMPLETED,
           reason: dto.reason,
           total,
+          resolution,
+          storeCreditAmount: resolution === ReturnResolution.STORE_CREDIT || resolution === ReturnResolution.PRODUCT_EXCHANGE ? cashRefund : 0,
+          loyaltyPointsAwarded: resolution === ReturnResolution.LOYALTY_POINTS ? Math.floor(cashRefund / 100) : 0,
           completedAt: new Date(),
         },
       });
+      if ((resolution === ReturnResolution.STORE_CREDIT || resolution === ReturnResolution.PRODUCT_EXCHANGE) && cashRefund > 0) {
+        const account = await tx.storeCreditAccount.upsert({
+          where: { customerId: sale.customerId! },
+          create: { customerId: sale.customerId!, balance: cashRefund },
+          update: { balance: { increment: cashRefund } },
+        });
+        await tx.storeCreditTransaction.create({ data: { storeCreditAccountId: account.id, amount: cashRefund, reason: resolution === ReturnResolution.PRODUCT_EXCHANGE ? 'PRODUCT_EXCHANGE' : 'RETURN_STORE_CREDIT', referenceType: 'RETURN', referenceId: record.id } });
+      }
+      if (resolution === ReturnResolution.LOYALTY_POINTS && cashRefund > 0) {
+        const points = Math.floor(cashRefund / 100);
+        const account = await tx.loyaltyAccount.upsert({ where: { customerId: sale.customerId! }, create: { customerId: sale.customerId!, points }, update: { points: { increment: points } } });
+        await tx.loyaltyTransaction.create({ data: { loyaltyAccountId: account.id, points, reason: 'RETURN_REFUND', referenceType: 'RETURN', referenceId: record.id } });
+      }
       for (const row of prepared) {
         await tx.returnItem.create({
           data: {

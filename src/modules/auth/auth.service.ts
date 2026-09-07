@@ -44,6 +44,7 @@ type LoginResult = {
     name: string | null;
     roles: string[];
     permissions: string[];
+    mustChangePassword: boolean;
   };
 };
 
@@ -155,6 +156,7 @@ export class AuthService {
         name: user.name,
         roles,
         permissions,
+        mustChangePassword: user.mustChangePassword,
       },
     };
   }
@@ -476,7 +478,46 @@ export class AuthService {
           ),
         ),
       ],
+      mustChangePassword: user.mustChangePassword,
     };
+  }
+
+  async sendEmployeeWelcomeEmail(
+    to: string,
+    employeeName: string,
+    temporaryPassword: string,
+  ): Promise<void> {
+    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    const name = this.escapeHtml(employeeName);
+    const password = this.escapeHtml(temporaryPassword);
+    await this.sendMail(
+      to,
+      'Your TechNova POS employee account',
+      `<p>Hello ${name},</p><p>Your TechNova POS employee account is ready.</p><p><strong>Email:</strong> ${this.escapeHtml(to)}<br/><strong>Temporary password:</strong> <code>${password}</code></p><p><a href="${this.escapeHtml(loginUrl)}">Sign in to TechNova POS</a></p><p>For security, change this temporary password immediately after signing in. Do not share it with anyone.</p>`,
+    );
+  }
+
+  async sendSupplierWelcomeEmail(
+    to: string,
+    contactName: string,
+    temporaryPassword: string,
+  ): Promise<void> {
+    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    await this.sendMail(
+      to,
+      'Your TechNova POS supplier portal account',
+      `<p>Hello ${this.escapeHtml(contactName)},</p><p>Your TechNova supplier portal is ready. You can review purchase orders, respond with availability or proposed changes, and submit dispatch and invoice information.</p><p><strong>Email:</strong> ${this.escapeHtml(to)}<br/><strong>Temporary password:</strong> <code>${this.escapeHtml(temporaryPassword)}</code></p><p><a href="${this.escapeHtml(loginUrl)}">Sign in to the supplier portal</a></p><p>For security, change this temporary password immediately after signing in. Do not share it with anyone.</p>`,
+    );
+  }
+
+  private escapeHtml(value: string): string {
+    return value.replace(/[&<>'"]/g, (character) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      "'": '&#39;',
+      '"': '&quot;',
+    })[character] ?? character);
   }
 
   private async sendMail(
@@ -528,5 +569,24 @@ export class AuthService {
       this.config.get<string>('AUTH_GOOGLE_CALLBACK_URL') ??
       this.config.getOrThrow<string>('GOOGLE_CALLBACK_URL')
     );
+  }
+
+  sessions(userId: string) {
+    return this.repository.listActiveSessions(userId);
+  }
+
+  async revokeSession(userId: string, sessionId: string) {
+    const result = await this.repository.revokeSession(userId, sessionId);
+    if (!result.count) throw new UnauthorizedException('Session is unavailable.');
+    return { revoked: true };
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const user = await this.repository.findUserById(userId);
+    if (!user?.passwordHash || !(await verifyPassword(currentPassword, user.passwordHash))) throw new UnauthorizedException('Current password is incorrect.');
+    const validation = validatePasswordStrength(newPassword);
+    if (!validation.valid) throw new ForbiddenException(validation.errors.join(' '));
+    await this.repository.changePassword(userId, await hashPassword(newPassword));
+    return { changed: true };
   }
 }
