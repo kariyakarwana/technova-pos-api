@@ -14,6 +14,7 @@ import {
   UpdateVisualThemeDto,
   VisualThemeQueryDto,
 } from './dto/visual-theme.dto';
+import { DEFAULT_VISUAL_THEME_TOKENS } from './default-visual-theme.constant';
 
 @Injectable()
 export class VisualThemesService {
@@ -32,8 +33,57 @@ export class VisualThemesService {
     return membership.organizationId;
   }
 
+  private ensureLocks = new Map<string, Promise<void>>();
+
+  private async ensureDefaultTheme(organizationId: string): Promise<void> {
+    const inFlight = this.ensureLocks.get(organizationId);
+    if (inFlight) {
+      return inFlight;
+    }
+    const promise = (async () => {
+      const existing = await this.prisma.visualTheme.findFirst({
+        where: { organizationId, name: 'Default' },
+      });
+      if (!existing) {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.visualTheme.updateMany({
+            where: { organizationId, isDefault: true },
+            data: { isDefault: false },
+          });
+          await tx.visualTheme.create({
+            data: {
+              organizationId,
+              name: 'Default',
+              isDefault: true,
+              tokens: DEFAULT_VISUAL_THEME_TOKENS as unknown as Prisma.InputJsonValue,
+            },
+          });
+        });
+      } else if (!existing.isDefault) {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.visualTheme.updateMany({
+            where: { organizationId, isDefault: true, NOT: { id: existing.id } },
+            data: { isDefault: false },
+          });
+          await tx.visualTheme.update({
+            where: { id: existing.id },
+            data: { isDefault: true },
+          });
+        });
+      }
+    })();
+
+    this.ensureLocks.set(organizationId, promise);
+    try {
+      await promise;
+    } finally {
+      this.ensureLocks.delete(organizationId);
+    }
+  }
+
   async list(user: AuthenticatedUser, query: VisualThemeQueryDto) {
     const organizationId = await this.organizationId(user.id);
+    await this.ensureDefaultTheme(organizationId);
 
     const where: Prisma.VisualThemeWhereInput = {
       organizationId,

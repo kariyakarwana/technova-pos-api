@@ -14,6 +14,7 @@ import {
   DashboardTemplateQueryDto,
   UpdateDashboardTemplateDto,
 } from './dto/dashboard-template.dto';
+import { DEFAULT_DASHBOARD_TEMPLATE_LAYOUT } from './default-dashboard-template.constant';
 
 @Injectable()
 export class DashboardTemplatesService {
@@ -32,8 +33,43 @@ export class DashboardTemplatesService {
     return membership.organizationId;
   }
 
+  private ensureLocks = new Map<string, Promise<void>>();
+
+  private async ensureDefaultTemplate(organizationId: string): Promise<void> {
+    const inFlight = this.ensureLocks.get(organizationId);
+    if (inFlight) {
+      return inFlight;
+    }
+    const promise = (async () => {
+      const existing = await this.prisma.dashboardTemplate.findFirst({
+        where: { name: 'Default', isSystem: true },
+      });
+      if (!existing) {
+        await this.prisma.dashboardTemplate.create({
+          data: {
+            organizationId,
+            name: 'Default',
+            description:
+              'Standard Technova POS overview layout with KPIs, trends, and sales analytics.',
+            category: 'Overview',
+            isSystem: true,
+            layout: DEFAULT_DASHBOARD_TEMPLATE_LAYOUT as unknown as Prisma.InputJsonValue,
+          },
+        });
+      }
+    })();
+
+    this.ensureLocks.set(organizationId, promise);
+    try {
+      await promise;
+    } finally {
+      this.ensureLocks.delete(organizationId);
+    }
+  }
+
   async list(user: AuthenticatedUser, query: DashboardTemplateQueryDto) {
     const organizationId = await this.organizationId(user.id);
+    await this.ensureDefaultTemplate(organizationId);
 
     const where: Prisma.DashboardTemplateWhereInput = {
       OR: [{ organizationId }, { isSystem: true }],
