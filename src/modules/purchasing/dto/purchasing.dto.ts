@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsNumber,
   IsOptional,
@@ -61,6 +62,7 @@ export class ReceiptItemDto {
   @Min(0.001)
   quantity!: number;
   @IsOptional() @IsArray() @IsString({ each: true }) serialNumbers?: string[];
+  @IsOptional() @IsBoolean() generateSerialNumbers?: boolean;
 }
 export class ReceivePurchaseOrderDto {
   @IsString() receiptNumber!: string;

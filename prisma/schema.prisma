@@ -477,14 +477,18 @@ model Organization {
 }
 
 model BrandingAsset {
-  id             String       @id @default(cuid())
-  organizationId String       @unique
-  logoUrl        String?
-  receiptLogoUrl String?
-  primaryColor   String?      @db.VarChar(20)
-  secondaryColor String?      @db.VarChar(20)
-  updatedAt      DateTime     @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id              String       @id @default(cuid())
+  organizationId  String       @unique
+  logoUrl         String?
+  logoObjectKey   String?      @unique
+  logoBucket      String?
+  logoContentType String?
+  logoSizeBytes   Int?
+  receiptLogoUrl  String?
+  primaryColor    String?      @db.VarChar(20)
+  secondaryColor  String?      @db.VarChar(20)
+  updatedAt       DateTime     @updatedAt
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@map("branding_assets")
 }
@@ -602,6 +606,7 @@ model Product {
   stockMovements     StockMovement[]
   stockTransferItems StockTransferItem[]
   images             ProductImage[]
+  videos             ProductVideo[]
 
   @@unique([organizationId, sku])
   @@unique([organizationId, barcode])
@@ -610,16 +615,36 @@ model Product {
 }
 
 model ProductImage {
-  id        String   @id @default(cuid())
-  productId String
-  url       String   @db.VarChar(2000)
-  altText   String?  @db.VarChar(240)
-  position  Int      @default(0)
-  createdAt DateTime @default(now())
-  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id           String   @id @default(cuid())
+  productId    String
+  url          String   @db.VarChar(2000)
+  objectKey    String?  @unique
+  bucket       String?
+  contentType  String?
+  sizeBytes    Int?
+  originalName String?
+  altText      String?  @db.VarChar(240)
+  position     Int      @default(0)
+  createdAt    DateTime @default(now())
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@index([productId, position])
   @@map("product_images")
+}
+
+model ProductVideo {
+  id           String   @id @default(cuid())
+  productId    String   @unique
+  url          String   @db.VarChar(2000)
+  objectKey    String   @unique
+  bucket       String
+  contentType  String
+  sizeBytes    Int
+  originalName String
+  createdAt    DateTime @default(now())
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("product_videos")
 }
 
 model Supplier {

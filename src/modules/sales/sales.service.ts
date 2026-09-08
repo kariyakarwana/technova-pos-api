@@ -48,12 +48,33 @@ export class SalesService {
       status: q.eligibleForReturn
         ? { in: [SaleStatus.COMPLETED, SaleStatus.PARTIALLY_REFUNDED] }
         : (q.status as SaleStatus | undefined),
-      createdAt: q.from || q.to ? { gte: q.from ? new Date(q.from) : undefined, lte: q.to ? new Date(q.to) : undefined } : undefined,
-      OR: q.search ? [
-        { invoiceNumber: { contains: q.search, mode: 'insensitive' as const } },
-        { customer: { firstName: { contains: q.search, mode: 'insensitive' as const } } },
-        { customer: { lastName: { contains: q.search, mode: 'insensitive' as const } } },
-      ] : undefined,
+      createdAt:
+        q.from || q.to
+          ? {
+              gte: q.from ? new Date(q.from) : undefined,
+              lte: q.to ? new Date(q.to) : undefined,
+            }
+          : undefined,
+      OR: q.search
+        ? [
+            {
+              invoiceNumber: {
+                contains: q.search,
+                mode: 'insensitive' as const,
+              },
+            },
+            {
+              customer: {
+                firstName: { contains: q.search, mode: 'insensitive' as const },
+              },
+            },
+            {
+              customer: {
+                lastName: { contains: q.search, mode: 'insensitive' as const },
+              },
+            },
+          ]
+        : undefined,
     };
     const [data, total] = await this.prisma.$transaction([
       this.prisma.sale.findMany({
@@ -126,7 +147,8 @@ export class SalesService {
       },
       select: { id: true, code: true, name: true },
     });
-    if (!branch) throw new NotFoundException('Active assigned branch not found.');
+    if (!branch)
+      throw new NotFoundException('Active assigned branch not found.');
     const [products, customers] = await Promise.all([
       this.prisma.product.findMany({
         where: { organizationId, status: RecordStatus.ACTIVE },
@@ -139,7 +161,16 @@ export class SalesService {
           sellingPrice: true,
           trackSerials: true,
           category: { select: { name: true } },
-          images: { orderBy: { position: 'asc' }, take: 1, select: { url: true } },
+          images: {
+            orderBy: { position: 'asc' },
+            take: 1,
+            select: { url: true },
+          },
+          videos: {
+            orderBy: { createdAt: 'asc' },
+            take: 1,
+            select: { url: true },
+          },
           stockLevels: {
             where: { branchId },
             select: { quantityOnHand: true, quantityReserved: true },
@@ -228,13 +259,17 @@ export class SalesService {
       .filter((payment) => payment.method === PaymentMethod.STORE_CREDIT)
       .reduce((sum, payment) => sum + payment.amount, 0);
     if (storeCreditPayment > 0 && !customer)
-      throw new BadRequestException('Store credit requires a registered customer.');
+      throw new BadRequestException(
+        'Store credit requires a registered customer.',
+      );
     if (storeCreditPayment > 0) {
       const account = await this.prisma.storeCreditAccount.findUnique({
         where: { customerId: customer!.id },
       });
       if (!account || Number(account.balance) + 0.001 < storeCreditPayment)
-        throw new ConflictException('The customer has insufficient store credit.');
+        throw new ConflictException(
+          'The customer has insufficient store credit.',
+        );
     }
     if (dto.credit && !customer)
       throw new BadRequestException('A credit sale requires a customer.');
@@ -582,28 +617,76 @@ export class SalesService {
     return result;
   }
 
-  async quote(userId: string, items: Array<{ productId: string; quantity: number; serialNumber?: string }>) {
+  async quote(
+    userId: string,
+    items: Array<{
+      productId: string;
+      quantity: number;
+      serialNumber?: string;
+    }>,
+  ) {
     const organizationId = await this.org(userId);
     const productIds = [...new Set(items.map((item) => item.productId))];
     const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, organizationId, status: RecordStatus.ACTIVE },
-      include: { discountRules: { where: { status: RecordStatus.ACTIVE }, orderBy: { priority: 'desc' } } },
+      where: {
+        id: { in: productIds },
+        organizationId,
+        status: RecordStatus.ACTIVE,
+      },
+      include: {
+        discountRules: {
+          where: { status: RecordStatus.ACTIVE },
+          orderBy: { priority: 'desc' },
+        },
+      },
     });
-    if (products.length !== productIds.length) throw new BadRequestException('One or more products are invalid.');
-    const productMap = new Map(products.map((product) => [product.id, product]));
+    if (products.length !== productIds.length)
+      throw new BadRequestException('One or more products are invalid.');
+    const productMap = new Map(
+      products.map((product) => [product.id, product]),
+    );
     const now = new Date();
     const lines = items.map((input) => {
       const product = productMap.get(input.productId)!;
       const gross = Number(product.sellingPrice) * input.quantity;
-      const rule = product.discountRules.find((candidate) => Number(candidate.minimumQuantity) <= input.quantity && (candidate.maximumQuantity === null || Number(candidate.maximumQuantity) >= input.quantity) && (!candidate.startsAt || candidate.startsAt <= now) && (!candidate.endsAt || candidate.endsAt >= now));
+      const rule = product.discountRules.find(
+        (candidate) =>
+          Number(candidate.minimumQuantity) <= input.quantity &&
+          (candidate.maximumQuantity === null ||
+            Number(candidate.maximumQuantity) >= input.quantity) &&
+          (!candidate.startsAt || candidate.startsAt <= now) &&
+          (!candidate.endsAt || candidate.endsAt >= now),
+      );
       let discount = 0;
-      if (rule?.type === DiscountType.PERCENTAGE) discount = (gross * Number(rule.value)) / 100;
-      else if (rule?.type === DiscountType.FIXED_AMOUNT) discount = Number(rule.value);
-      else if (rule) discount = Math.max(0, gross - Number(rule.value) * input.quantity);
+      if (rule?.type === DiscountType.PERCENTAGE)
+        discount = (gross * Number(rule.value)) / 100;
+      else if (rule?.type === DiscountType.FIXED_AMOUNT)
+        discount = Number(rule.value);
+      else if (rule)
+        discount = Math.max(0, gross - Number(rule.value) * input.quantity);
       discount = Math.min(gross, discount);
       const tax = ((gross - discount) * Number(product.taxRate)) / 100;
-      return { productId: product.id, sku: product.sku, name: product.name, quantity: input.quantity, unitPrice: Number(product.sellingPrice), discount, tax, total: gross - discount + tax, discountRule: rule?.name ?? null };
+      return {
+        productId: product.id,
+        sku: product.sku,
+        name: product.name,
+        quantity: input.quantity,
+        unitPrice: Number(product.sellingPrice),
+        discount,
+        tax,
+        total: gross - discount + tax,
+        discountRule: rule?.name ?? null,
+      };
     });
-    return { lines, subtotal: lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0), discountTotal: lines.reduce((sum, line) => sum + line.discount, 0), taxTotal: lines.reduce((sum, line) => sum + line.tax, 0), total: lines.reduce((sum, line) => sum + line.total, 0) };
+    return {
+      lines,
+      subtotal: lines.reduce(
+        (sum, line) => sum + line.unitPrice * line.quantity,
+        0,
+      ),
+      discountTotal: lines.reduce((sum, line) => sum + line.discount, 0),
+      taxTotal: lines.reduce((sum, line) => sum + line.tax, 0),
+      total: lines.reduce((sum, line) => sum + line.total, 0),
+    };
   }
 }

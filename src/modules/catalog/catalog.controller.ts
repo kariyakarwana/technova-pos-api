@@ -1,14 +1,18 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
   Post,
   Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
@@ -17,6 +21,7 @@ import { RequirePermissions } from '../../common/auth/permissions.decorator';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
 import { getSecurityRequestContext } from '../../common/security/request';
 import { CatalogService } from './catalog.service';
+import type { ProductUpload } from '../storage/storage.service';
 import {
   CreateBrandDto,
   CreateCategoryDto,
@@ -99,5 +104,75 @@ export class CatalogController {
     @Req() r: Request,
   ) {
     return this.catalog.updateProduct(u, id, d, getSecurityRequestContext(r));
+  }
+
+  @Post('products/:id/images')
+  @RequirePermissions('products:manage')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 8 * 1024 * 1024 } }),
+  )
+  uploadProductImage(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @UploadedFile() file: ProductUpload | undefined,
+    @Req() r: Request,
+  ) {
+    return this.catalog.uploadProductImage(
+      u,
+      id,
+      file,
+      getSecurityRequestContext(r),
+    );
+  }
+
+  @Delete('products/:id/images/:imageId')
+  @RequirePermissions('products:manage')
+  removeProductImage(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('imageId') imageId: string,
+    @Req() r: Request,
+  ) {
+    return this.catalog.removeProductImage(
+      u,
+      id,
+      imageId,
+      getSecurityRequestContext(r),
+    );
+  }
+
+  @Post('products/:id/video')
+  @RequirePermissions('products:manage')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }),
+  )
+  uploadProductVideo(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @UploadedFile() file: ProductUpload | undefined,
+    @Req() r: Request,
+  ) {
+    return this.catalog.uploadProductVideo(
+      u,
+      id,
+      file,
+      getSecurityRequestContext(r),
+    );
+  }
+
+  @Delete('products/:id/video/:videoId')
+  @RequirePermissions('products:manage')
+  removeProductVideo(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('videoId') videoId: string,
+    @Req() r: Request,
+  ) {
+    return this.catalog.removeProductVideo(
+      u,
+      id,
+      videoId,
+      getSecurityRequestContext(r),
+    );
   }
 }
