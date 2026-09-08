@@ -25,6 +25,7 @@ import {
   PurchaseQueryDto,
   ReceivePurchaseOrderDto,
 } from './dto/purchasing.dto';
+import { generateInventorySerialNumber } from './serial-number';
 
 @Injectable()
 export class PurchasingService {
@@ -139,7 +140,12 @@ export class PurchasingService {
           item.inventoryUnits.flatMap((unit) => {
             const token = this.qrToken(unit.id, unit.qrVersion);
             return hashToken(token) === unit.qrCodeHash
-              ? [{ serialNumber: unit.serialNumber, qrPayload: this.qrPayload(token) }]
+              ? [
+                  {
+                    serialNumber: unit.serialNumber,
+                    qrPayload: this.qrPayload(token),
+                  },
+                ]
               : [];
           }),
         ),
@@ -271,22 +277,39 @@ export class PurchasingService {
         throw new BadRequestException(
           `Received quantity exceeds remaining quantity for ${item.product.name}.`,
         );
+      let serialNumbers = (input.serialNumbers ?? [])
+        .map((serial) => serial.trim().toUpperCase())
+        .filter(Boolean);
       if (item.product.trackSerials) {
-        if (
-          !Number.isInteger(input.quantity) ||
-          input.serialNumbers?.length !== input.quantity
-        )
+        if (!Number.isInteger(input.quantity))
           throw new BadRequestException(
-            `Every ${item.product.name} unit requires one serial number.`,
+            `${item.product.name} must be received as complete serialized units.`,
           );
-      } else if (input.serialNumbers?.length)
+        if (input.generateSerialNumbers && serialNumbers.length)
+          throw new BadRequestException(
+            `Choose automatic or manual serial numbers for ${item.product.name}, not both.`,
+          );
+        if (input.generateSerialNumbers) {
+          serialNumbers = Array.from({ length: input.quantity }, () =>
+            generateInventorySerialNumber(item.product.sku),
+          );
+        } else if (serialNumbers.length !== input.quantity) {
+          throw new BadRequestException(
+            `Every ${item.product.name} unit requires one serial number, or enable automatic generation.`,
+          );
+        }
+        if (new Set(serialNumbers).size !== serialNumbers.length)
+          throw new BadRequestException(
+            `Serial numbers for ${item.product.name} must be unique.`,
+          );
+      } else if (serialNumbers.length || input.generateSerialNumbers)
         throw new BadRequestException(
           `${item.product.name} is not configured for serial tracking.`,
         );
       return {
         input,
         item,
-        qr: (input.serialNumbers ?? []).map((serialNumber) => {
+        qr: serialNumbers.map((serialNumber) => {
           const unitId = randomUUID();
           const token = this.qrToken(unitId, 1);
           return { unitId, serialNumber, token, tokenHash: hashToken(token) };
@@ -412,10 +435,18 @@ export class PurchasingService {
       throw error;
     }
   }
-  async reissueReceiptLabels(userId: string, orderId: string, receiptId: string) {
+  async reissueReceiptLabels(
+    userId: string,
+    orderId: string,
+    receiptId: string,
+  ) {
     const organizationId = await this.organizationId(userId);
     const receipt = await this.prisma.goodsReceipt.findFirst({
-      where: { id: receiptId, purchaseOrderId: orderId, branch: { organizationId } },
+      where: {
+        id: receiptId,
+        purchaseOrderId: orderId,
+        branch: { organizationId },
+      },
       include: { items: { include: { inventoryUnits: true } } },
     });
     if (!receipt) throw new NotFoundException('Goods receipt not found.');
@@ -425,8 +456,14 @@ export class PurchasingService {
         for (const unit of item.inventoryUnits) {
           const version = unit.qrVersion + 1;
           const token = this.qrToken(unit.id, version);
-          await tx.inventoryUnit.update({ where: { id: unit.id }, data: { qrVersion: version, qrCodeHash: hashToken(token) } });
-          labels.push({ serialNumber: unit.serialNumber, qrPayload: this.qrPayload(token) });
+          await tx.inventoryUnit.update({
+            where: { id: unit.id },
+            data: { qrVersion: version, qrCodeHash: hashToken(token) },
+          });
+          labels.push({
+            serialNumber: unit.serialNumber,
+            qrPayload: this.qrPayload(token),
+          });
         }
       }
     });
@@ -438,9 +475,12 @@ export class PurchasingService {
       this.config.get<string>('QR_LABEL_SECRET') ??
       this.config.get<string>('AUTH_JWT_ACCESS_SECRET') ??
       this.config.getOrThrow<string>('JWT_ACCESS_PRIVATE_KEY');
-    const signature = createHmac('sha256', secret).update(value).digest('base64url');
+    const signature = createHmac('sha256', secret)
+      .update(value)
+      .digest('base64url');
     return `${value}.${signature}`;
   }
+
   private qrPayload(token: string) {
     return `${this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3000'}/qr/product/${token}`;
   }
