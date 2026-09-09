@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -14,14 +15,18 @@ import type { SecurityRequestContext } from '../../common/security/request';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateUserDto, UpdateUserAccessDto, UserQueryDto } from './dto/user.dto';
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly auth: AuthService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async organizationId(userId: string) {
@@ -45,6 +50,7 @@ export class UsersService {
         ? [
             { name: { contains: query.search, mode: 'insensitive' } },
             { email: { contains: query.search, mode: 'insensitive' } },
+            { phone: { contains: query.search } },
           ]
         : undefined,
     };
@@ -52,6 +58,7 @@ export class UsersService {
       id: true,
       email: true,
       name: true,
+      phone: true,
       status: true,
       emailVerified: true,
       lastLoginAt: true,
@@ -83,12 +90,18 @@ export class UsersService {
     context: SecurityRequestContext,
   ) {
     const organizationId = await this.organizationId(actor.id);
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { name: true },
+    });
+    if (!organization) throw new NotFoundException('Organization not found.');
     await this.validateAssignments(organizationId, dto.roleIds, dto.branchIds);
     const temporaryPassword = `Tn1!${randomBytes(12).toString('base64url')}`;
     let user: {
       id: string;
       email: string;
       name: string | null;
+      phone: string | null;
       status: UserStatus;
     };
     try {
@@ -96,9 +109,11 @@ export class UsersService {
         data: {
           email: dto.email.trim().toLowerCase(),
           name: dto.name.trim(),
+          phone: dto.phone.trim(),
           passwordHash: await hashPassword(temporaryPassword),
           emailVerified: new Date(),
           status: UserStatus.ACTIVE,
+          mustChangePassword: true,
           organizationMemberships: { create: { organizationId } },
           roles: { create: dto.roleIds.map((roleId) => ({ roleId })) },
           branchAssignments: {
@@ -108,7 +123,7 @@ export class UsersService {
             })),
           },
         },
-        select: { id: true, email: true, name: true, status: true },
+        select: { id: true, email: true, name: true, phone: true, status: true },
       });
     } catch (error) {
       if (
@@ -130,13 +145,30 @@ export class UsersService {
         'The employee email could not be delivered, so the account was not created. Check the SMTP settings and try again.',
       );
     }
+    let whatsappQueued = false;
+    try {
+      const welcome = await this.notifications.queueEmployeeWelcomeWhatsapp({
+        organizationId,
+        companyName: organization.name,
+        employeeId: user.id,
+        employeeName: user.name ?? dto.name.trim(),
+        email: user.email,
+        phone: user.phone ?? dto.phone.trim(),
+      });
+      whatsappQueued = welcome.queued;
+    } catch (error) {
+      this.logger.error(
+        `Employee ${user.id} was created, but the WhatsApp welcome message could not be queued.`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
     await this.audit.record({
       userId: actor.id,
       action: 'USER_CREATED',
       context,
       metadata: { targetUserId: user.id },
     });
-    return { ...user, temporaryPasswordSent: true };
+    return { ...user, temporaryPasswordSent: true, whatsappQueued };
   }
 
   async updateAccess(
@@ -172,6 +204,7 @@ export class UsersService {
         where: { id: targetUserId },
         data: {
           name: dto.name,
+          phone: dto.phone?.trim(),
           status: dto.status,
           sessionVersion: { increment: 1 },
         },
