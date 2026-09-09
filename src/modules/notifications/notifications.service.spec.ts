@@ -117,4 +117,61 @@ describe('NotificationsService', () => {
     expect(String(rows[0].body)).toContain('CUS-000043');
     expect(String(rows[1].body)).toContain('Connex Retail');
   });
+
+  it('queues an employee WhatsApp welcome without exposing credentials', async () => {
+    let outboxInput: { data: Record<string, unknown> } | undefined;
+    const transaction = {
+      domainEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'event-employee-1' }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      notificationOutbox: {
+        create: jest
+          .fn()
+          .mockImplementation((input: { data: Record<string, unknown> }) => {
+            outboxInput = input;
+            return Promise.resolve({ id: 'outbox-1' });
+          }),
+      },
+    };
+    const prisma = {
+      notificationTemplate: { findFirst: jest.fn().mockResolvedValue(null) },
+      $transaction: jest
+        .fn()
+        .mockImplementation(
+          (callback: (client: typeof transaction) => Promise<unknown>) =>
+            callback(transaction),
+        ),
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('https://pos.example.com'),
+    };
+    const service = new NotificationsService(
+      prisma as unknown as PrismaService,
+      config as unknown as ConfigService,
+    );
+
+    const result = await service.queueEmployeeWelcomeWhatsapp({
+      organizationId: 'org-1',
+      companyName: 'Connex Retail',
+      employeeId: 'employee-1',
+      employeeName: 'Saman Perera',
+      email: 'saman@example.com',
+      phone: '+94771234567',
+    });
+
+    expect(result).toEqual({ queued: true });
+    expect(outboxInput?.data).toEqual(
+      expect.objectContaining({
+        channel: NotificationChannel.WHATSAPP,
+        recipient: '+94771234567',
+        idempotencyKey: 'employee-welcome:employee-1:WHATSAPP',
+      }),
+    );
+    expect(String(outboxInput?.data.body)).toContain('saman@example.com');
+    expect(String(outboxInput?.data.body)).not.toContain('Tn1!temporary');
+    expect(String(outboxInput?.data.body)).toContain(
+      'https://pos.example.com/login',
+    );
+  });
 });
