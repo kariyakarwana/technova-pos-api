@@ -34,6 +34,15 @@ type CustomerWelcomeInput = {
   email: string | null;
 };
 
+type EmployeeWelcomeWhatsappInput = {
+  organizationId: string;
+  companyName: string;
+  employeeId: string;
+  employeeName: string;
+  email: string;
+  phone: string;
+};
+
 @Injectable()
 export class NotificationsService {
   constructor(
@@ -190,6 +199,63 @@ export class NotificationsService {
       queuedChannels: enabledDestinations.map((item) => item.channel),
     };
   }
+
+  async queueEmployeeWelcomeWhatsapp(input: EmployeeWelcomeWhatsappInput) {
+    const phone = input.phone.trim();
+    if (!phone) return { queued: false };
+
+    const eventType = 'EMPLOYEE_WELCOME';
+    const template = await this.prisma.notificationTemplate.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        eventType,
+        channel: NotificationChannel.WHATSAPP,
+      },
+    });
+    if (template && template.status !== RecordStatus.ACTIVE)
+      return { queued: false };
+
+    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    const payload: Prisma.InputJsonObject = {
+      companyName: input.companyName,
+      employeeId: input.employeeId,
+      employeeName: input.employeeName,
+      email: input.email,
+      loginUrl,
+    };
+    const fallbackBody = `Hello ${input.employeeName}! Your ${input.companyName} employee account is ready. Your temporary password was sent securely to ${input.email}. Sign in: ${loginUrl}. Change the password immediately after signing in.`;
+
+    await this.prisma.$transaction(async (transaction) => {
+      const event = await transaction.domainEvent.create({
+        data: {
+          organizationId: input.organizationId,
+          aggregateType: 'EMPLOYEE',
+          aggregateId: input.employeeId,
+          eventType,
+          payload,
+        },
+      });
+      await transaction.notificationOutbox.create({
+        data: {
+          domainEventId: event.id,
+          templateId: template?.id,
+          channel: NotificationChannel.WHATSAPP,
+          recipient: phone,
+          body: template
+            ? this.render(template.bodyTemplate, eventType, payload)
+            : fallbackBody,
+          idempotencyKey: `employee-welcome:${input.employeeId}:WHATSAPP`,
+        },
+      });
+      await transaction.domainEvent.update({
+        where: { id: event.id },
+        data: { processedAt: new Date() },
+      });
+    });
+
+    return { queued: true };
+  }
+
   async templates(userId: string) {
     const organizationId = await this.org(userId);
     return this.prisma.notificationTemplate.findMany({
@@ -221,6 +287,32 @@ export class NotificationsService {
             name: 'Customer welcome WhatsApp',
             bodyTemplate:
               'Hello {{firstName}}! Thank you for becoming a customer of {{companyName}}. Your customer number is {{customerNumber}}. We look forward to serving you.',
+          },
+        },
+      },
+      {
+        eventType: 'EMPLOYEE_WELCOME',
+        label: 'Employee welcome',
+        audience: 'Employee',
+        description:
+          'Sent after an employee account is created with a temporary password.',
+        variables: [
+          ['companyName', 'Company name', 'TechNova'],
+          ['employeeName', 'Employee name', 'Saman Perera'],
+          ['email', 'Employee email', 'saman@example.com'],
+          ['loginUrl', 'Sign-in address', 'https://pos.example.com/login'],
+        ],
+        suggestions: {
+          EMAIL: {
+            name: 'Employee welcome email',
+            subjectTemplate: 'Your {{companyName}} employee account',
+            bodyTemplate:
+              'Hello {{employeeName}},\n\nYour employee account is ready. Your temporary password has been sent separately to {{email}}.\nSign in: {{loginUrl}}\n\nChange the password immediately after signing in.',
+          },
+          WHATSAPP: {
+            name: 'Employee welcome WhatsApp',
+            bodyTemplate:
+              'Hello {{employeeName}}! Your {{companyName}} employee account is ready. Your temporary password was sent securely to {{email}}. Sign in: {{loginUrl}}. Change the password immediately after signing in.',
           },
         },
       },
