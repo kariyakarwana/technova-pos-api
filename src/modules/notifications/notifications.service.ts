@@ -334,6 +334,32 @@ export class NotificationsService {
         },
       },
       {
+        eventType: 'EMPLOYEE_WELCOME',
+        label: 'Employee welcome',
+        audience: 'Employee',
+        description:
+          'Sent after an employee account is created with a temporary password.',
+        variables: [
+          ['companyName', 'Company name', 'TechNova'],
+          ['employeeName', 'Employee name', 'Saman Perera'],
+          ['email', 'Employee email', 'saman@example.com'],
+          ['loginUrl', 'Sign-in address', 'https://pos.example.com/login'],
+        ],
+        suggestions: {
+          EMAIL: {
+            name: 'Employee welcome email',
+            subjectTemplate: 'Your {{companyName}} employee account',
+            bodyTemplate:
+              'Hello {{employeeName}},\n\nYour employee account is ready. Your temporary password has been sent separately to {{email}}.\nSign in: {{loginUrl}}\n\nChange the password immediately after signing in.',
+          },
+          WHATSAPP: {
+            name: 'Employee welcome WhatsApp',
+            bodyTemplate:
+              'Hello {{employeeName}}! Your {{companyName}} employee account is ready. Your temporary password was sent securely to {{email}}. Sign in: {{loginUrl}}. Change the password immediately after signing in.',
+          },
+        },
+      },
+      {
         eventType: 'PROMOTION_STARTED',
         label: 'Promotion started',
         audience: 'Customer',
