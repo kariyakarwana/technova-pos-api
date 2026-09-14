@@ -16,7 +16,11 @@ import type { Request, Response } from 'express';
 
 import { getSecurityRequestContext } from '../../common/security/request';
 import { AuthService } from './auth.service';
-import { LoginDto } from './dto/login.dto';
+import {
+  CustomerLoginDto,
+  CustomerRefreshDto,
+  LoginDto,
+} from './dto/login.dto';
 import {
   ChangePasswordDto,
   EmailDto,
@@ -180,6 +184,40 @@ export class AuthController {
   private bearerToken(request: Request): string | undefined {
     const value = request.get('authorization');
     return value?.startsWith('Bearer ') ? value.slice(7) : undefined;
+  }
+
+  @Post('customer/login')
+  @HttpCode(HttpStatus.OK)
+  customerLogin(@Body() dto: CustomerLoginDto, @Req() request: Request) {
+    return this.authService.loginCustomer({
+      phone: dto.phone,
+      password: dto.password,
+      context: getSecurityRequestContext(request),
+    });
+  }
+
+  @Post('customer/refresh')
+  @HttpCode(HttpStatus.OK)
+  customerRefresh(
+    @Body() dto: CustomerRefreshDto,
+    @Req() request: Request,
+  ) {
+    return this.authService.refreshCustomer(
+      dto.refreshToken,
+      getSecurityRequestContext(request),
+    );
+  }
+
+  @Post('customer/logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  customerLogout(
+    @Body() dto: CustomerRefreshDto,
+    @Req() request: Request,
+  ) {
+    return this.authService.logout(
+      dto.refreshToken,
+      getSecurityRequestContext(request),
+    );
   }
 
   @Get('sessions')

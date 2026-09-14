@@ -4,9 +4,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, RecordStatus, UserStatus } from '@prisma/client';
+import { randomBytes } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { paginate } from '../../common/dto/pagination.dto';
+import { hashPassword } from '../../common/security/password';
+import { normalizePhone } from '../../common/security/phone';
 import type { SecurityRequestContext } from '../../common/security/request';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -51,7 +54,11 @@ export class CustomersService {
         where,
         skip: q.skip,
         take: q.pageSize,
-        include: { loyaltyAccount: true, storeCreditAccount: true },
+        include: {
+          loyaltyAccount: true,
+          storeCreditAccount: true,
+          user: { select: { status: true, lastLoginAt: true } },
+        },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.customer.count({ where }),
@@ -75,6 +82,16 @@ export class CustomersService {
         },
         creditAgreements: { orderBy: { createdAt: 'desc' }, take: 20 },
         warranties: { orderBy: { createdAt: 'desc' }, take: 20 },
+        user: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            status: true,
+            mustChangePassword: true,
+            lastLoginAt: true,
+          },
+        },
       },
     });
     if (!value) throw new NotFoundException('Customer not found.');
@@ -94,6 +111,22 @@ export class CustomersService {
     });
     if (!membership) throw new NotFoundException('Organization not found.');
 
+    const email = dto.email.trim().toLowerCase();
+    const phone = normalizePhone(dto.phone);
+    const existingAccount = await this.prisma.user.findFirst({
+      where: { OR: [{ email }, { phone }] },
+      select: { email: true, phone: true },
+    });
+    if (existingAccount)
+      throw new ConflictException(
+        existingAccount.email === email
+          ? 'An account already exists for this email address.'
+          : 'An account already exists for this phone number.',
+      );
+
+    const temporaryPassword = this.temporaryPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+
     let value: Awaited<
       ReturnType<typeof this.createWithGeneratedNumber>
     > | null = null;
@@ -101,14 +134,30 @@ export class CustomersService {
       try {
         value = await this.createWithGeneratedNumber(
           membership.organizationId,
-          dto,
+          { ...dto, email, phone },
+          passwordHash,
         );
       } catch (error) {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
           error.code === 'P2002'
-        )
+        ) {
+          const rawTarget = error.meta?.target;
+          const target = Array.isArray(rawTarget)
+            ? rawTarget.filter((item): item is string => typeof item === 'string').join(',')
+            : typeof rawTarget === 'string'
+              ? rawTarget
+              : '';
+          if (target.includes('email'))
+            throw new ConflictException(
+              'An account already exists for this email address.',
+            );
+          if (target.includes('phone'))
+            throw new ConflictException(
+              'An account already exists for this phone number.',
+            );
           continue;
+        }
         throw error;
       }
     }
@@ -121,7 +170,12 @@ export class CustomersService {
       userId: actor.id,
       action: 'CUSTOMER_CREATED',
       context,
-      metadata: { customerId: value.id, customerNumber: value.customerNumber },
+      metadata: {
+        customerId: value.id,
+        customerNumber: value.customerNumber,
+        customerUserId: value.userId,
+        credentialsCreated: true,
+      },
     });
 
     let queuedChannels: string[] = [];
@@ -130,11 +184,13 @@ export class CustomersService {
         organizationId: membership.organizationId,
         companyName: membership.organization.name,
         customerId: value.id,
+        userId: value.userId!,
         customerNumber: value.customerNumber,
         firstName: value.firstName,
         lastName: value.lastName,
-        phone: value.phone,
-        email: value.email,
+        phone,
+        email,
+        temporaryPassword,
       });
       queuedChannels = welcome.queuedChannels;
     } catch (error) {
@@ -146,6 +202,10 @@ export class CustomersService {
 
     return {
       ...value,
+      credentialsCreated: true,
+      temporaryPasswordSent:
+        queuedChannels.includes('EMAIL') &&
+        queuedChannels.includes('WHATSAPP'),
       welcomeNotifications: {
         emailQueued: queuedChannels.includes('EMAIL'),
         whatsappQueued: queuedChannels.includes('WHATSAPP'),
@@ -156,18 +216,75 @@ export class CustomersService {
   private async createWithGeneratedNumber(
     organizationId: string,
     dto: CreateCustomerDto,
+    passwordHash: string,
   ) {
     const customerNumber = await this.nextCustomerNumber(organizationId);
-    return this.prisma.customer.create({
-      data: {
-        ...dto,
-        customerNumber,
-        organizationId,
-        address: dto.address,
-        loyaltyAccount: { create: {} },
-      },
-      include: { loyaltyAccount: true, storeCreditAccount: true },
+    return this.prisma.$transaction(async (transaction) => {
+      const permission = await transaction.permission.upsert({
+        where: { key: 'customer-app:access' },
+        update: { description: 'Access the customer mobile application' },
+        create: {
+          key: 'customer-app:access',
+          description: 'Access the customer mobile application',
+        },
+      });
+      const role = await transaction.role.upsert({
+        where: { name: 'CUSTOMER' },
+        update: {
+          description: 'Customer mobile application user',
+          isSystem: true,
+        },
+        create: {
+          name: 'CUSTOMER',
+          description: 'Customer mobile application user',
+          isSystem: true,
+        },
+      });
+      await transaction.rolePermission.upsert({
+        where: {
+          roleId_permissionId: {
+            roleId: role.id,
+            permissionId: permission.id,
+          },
+        },
+        update: {},
+        create: { roleId: role.id, permissionId: permission.id },
+      });
+      const user = await transaction.user.create({
+        data: {
+          email: dto.email.trim().toLowerCase(),
+          phone: normalizePhone(dto.phone),
+          name: `${dto.firstName} ${dto.lastName ?? ''}`.trim(),
+          passwordHash,
+          emailVerified: new Date(),
+          status: UserStatus.ACTIVE,
+          mustChangePassword: true,
+          organizationMemberships: { create: { organizationId } },
+          roles: { create: { roleId: role.id } },
+        },
+      });
+      return transaction.customer.create({
+        data: {
+          ...dto,
+          email: dto.email.trim().toLowerCase(),
+          phone: normalizePhone(dto.phone),
+          customerNumber,
+          organizationId,
+          userId: user.id,
+          address: dto.address,
+          loyaltyAccount: { create: {} },
+        },
+        include: {
+          loyaltyAccount: true,
+          storeCreditAccount: true,
+          user: { select: { status: true, lastLoginAt: true } },
+        },
+      });
     });
+  }
+
+  private temporaryPassword() {
+    return `${randomBytes(9).toString('base64url')}Aa1!`;
   }
 
   private async nextCustomerNumber(organizationId: string) {
@@ -189,13 +306,44 @@ export class CustomersService {
     dto: UpdateCustomerDto,
     context: SecurityRequestContext,
   ) {
-    await this.detail(actor.id, id);
-    const value = await this.prisma.customer.update({
-      where: { id },
-      data: {
-        ...dto,
-        address: dto.address,
-      },
+    const current = await this.detail(actor.id, id);
+    const email = dto.email?.trim().toLowerCase();
+    const phone = dto.phone ? normalizePhone(dto.phone) : undefined;
+    const value = await this.prisma.$transaction(async (transaction) => {
+      const customer = await transaction.customer.update({
+        where: { id },
+        data: { ...dto, email, phone, address: dto.address },
+        include: {
+          loyaltyAccount: true,
+          storeCreditAccount: true,
+          user: { select: { status: true, lastLoginAt: true } },
+        },
+      });
+      if (current.userId) {
+        const identityChanged = email !== undefined || phone !== undefined;
+        await transaction.user.update({
+          where: { id: current.userId },
+          data: {
+            email,
+            phone,
+            name:
+              dto.firstName !== undefined || dto.lastName !== undefined
+                ? `${dto.firstName ?? current.firstName} ${dto.lastName ?? current.lastName ?? ''}`.trim()
+                : undefined,
+            status:
+              dto.status === undefined
+                ? undefined
+                : dto.status === RecordStatus.ACTIVE
+                  ? UserStatus.ACTIVE
+                  : UserStatus.INACTIVE,
+            sessionVersion:
+              identityChanged || dto.status !== undefined
+                ? { increment: 1 }
+                : undefined,
+          },
+        });
+      }
+      return customer;
     });
     await this.audit.record({
       userId: actor.id,

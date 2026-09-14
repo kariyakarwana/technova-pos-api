@@ -492,7 +492,10 @@ export class ReportsService {
     });
     return rows.map((row) => ({
       serialNumber: row.inventoryUnit.serialNumber, product: row.inventoryUnit.product.name,
-      branch: row.inventoryUnit.branch.name, customer: `${row.customer.firstName} ${row.customer.lastName ?? ''}`.trim(),
+      branch: row.inventoryUnit.branch.name,
+      customer: row.customer
+        ? `${row.customer.firstName} ${row.customer.lastName ?? ''}`.trim()
+        : 'Walk-in',
       policy: row.warrantyPolicy.name, status: row.status, startsAt: row.startsAt,
       endsAt: row.endsAt, activatedAt: row.activatedAt, events: row._count.events,
     }));

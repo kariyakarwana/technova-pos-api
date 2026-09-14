@@ -68,6 +68,9 @@ describe('NotificationsService', () => {
       notificationOutbox: {
         createMany,
       },
+      appNotification: {
+        create: jest.fn().mockResolvedValue({ id: 'notification-1' }),
+      },
     };
     const prisma = {
       notificationTemplate: { findMany: jest.fn().mockResolvedValue([]) },
@@ -87,11 +90,13 @@ describe('NotificationsService', () => {
       organizationId: 'org-1',
       companyName: 'Connex Retail',
       customerId: 'customer-1',
+      userId: 'user-1',
       customerNumber: 'CUS-000043',
       firstName: 'Nimal',
       lastName: 'Perera',
       email: 'nimal@example.com',
       phone: '+94771234567',
+      temporaryPassword: 'TempPass!234',
     });
 
     expect(result.queuedChannels).toEqual([
@@ -106,11 +111,17 @@ describe('NotificationsService', () => {
         expect.objectContaining({
           channel: NotificationChannel.EMAIL,
           recipient: 'nimal@example.com',
-          subject: 'Welcome to Connex Retail',
+          subject: 'Your Connex Retail customer account',
+          // Jest asymmetric matchers are intentionally dynamic.
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          body: expect.stringContaining('TempPass!234'),
         }),
         expect.objectContaining({
           channel: NotificationChannel.WHATSAPP,
           recipient: '+94771234567',
+          // Jest asymmetric matchers are intentionally dynamic.
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          body: expect.stringContaining('TempPass!234'),
         }),
       ]),
     );

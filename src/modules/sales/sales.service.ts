@@ -18,10 +18,10 @@ import { randomUUID } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { paginate } from '../../common/dto/pagination.dto';
 import type { SecurityRequestContext } from '../../common/security/request';
-import { generateRawToken, hashToken } from '../../common/security/token';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateSaleDto, SaleQueryDto } from './dto/sale.dto';
+import { calculateWarrantyEndDate } from './warranty-period';
 @Injectable()
 export class SalesService {
   constructor(
@@ -218,9 +218,19 @@ export class SalesService {
         items: {
           include: {
             product: true,
-            inventoryUnit: { select: { serialNumber: true } },
+            inventoryUnit: { select: { id: true, serialNumber: true } },
             discountApplications: { include: { discountRule: true } },
-            warranty: true,
+            warranty: {
+              include: {
+                warrantyPolicy: {
+                  select: {
+                    name: true,
+                    durationMonths: true,
+                    terms: true,
+                  },
+                },
+              },
+            },
           },
         },
         payments: true,
@@ -385,7 +395,13 @@ export class SalesService {
           );
       }
     }
-    const grants: Array<{ serialNumber: string; activationUrl: string }> = [];
+    const activatedWarranties: Array<{
+      warrantyId: string;
+      serialNumber: string;
+      status: WarrantyStatus;
+      startsAt: Date;
+      endsAt: Date;
+    }> = [];
     const result = await this.prisma.$transaction(async (tx) => {
       const sale = await tx.sale.create({
         data: {
@@ -469,32 +485,44 @@ export class SalesService {
             where: { id: unitId },
             data: { status: InventoryUnitStatus.SOLD },
           });
-        if (unitId && dto.customerId && row.product.warrantyPolicies[0]) {
-          const token = generateRawToken(),
-            tokenHash = hashToken(token);
+        if (unitId && row.product.warrantyPolicies[0]) {
+          const policy = row.product.warrantyPolicies[0];
+          const startsAt = sale.completedAt ?? now;
+          const endsAt = calculateWarrantyEndDate(
+            startsAt,
+            policy.durationMonths,
+          );
           const warranty = await tx.warranty.create({
             data: {
-              warrantyPolicyId: row.product.warrantyPolicies[0].id,
+              warrantyPolicyId: policy.id,
               inventoryUnitId: unitId,
               saleItemId: item.id,
               customerId: dto.customerId,
-              status: WarrantyStatus.PENDING,
-              activationTokenHash: tokenHash,
-              activationExpiresAt: new Date(
-                Date.now() + 30 * 24 * 60 * 60 * 1000,
-              ),
+              status: WarrantyStatus.ACTIVE,
+              activatedAt: startsAt,
+              startsAt,
+              endsAt,
             },
           });
-          await tx.qrAccessGrant.create({
+          await tx.warrantyEvent.create({
             data: {
               warrantyId: warranty.id,
-              tokenHash,
-              expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+              eventType: 'ACTIVATED_AT_SALE',
+              notes: 'Warranty started automatically when the POS sale completed.',
+              metadata: {
+                saleId: sale.id,
+                saleItemId: item.id,
+                serialNumber: row.input.serialNumber!,
+              },
+              occurredAt: startsAt,
             },
           });
-          grants.push({
+          activatedWarranties.push({
+            warrantyId: warranty.id,
             serialNumber: row.input.serialNumber!,
-            activationUrl: `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/warranty/activate?token=${token}`,
+            status: WarrantyStatus.ACTIVE,
+            startsAt,
+            endsAt,
           });
         }
       }
@@ -605,7 +633,7 @@ export class SalesService {
         invoiceNumber: sale.invoiceNumber,
         receiptNumber: receipt.receiptNumber,
         total,
-        warrantyActivations: grants,
+        warrantyActivations: activatedWarranties,
       };
     });
     await this.audit.record({
