@@ -27,11 +27,13 @@ type CustomerWelcomeInput = {
   organizationId: string;
   companyName: string;
   customerId: string;
+  userId: string;
   customerNumber: string;
   firstName: string;
   lastName: string | null;
-  phone: string | null;
-  email: string | null;
+  phone: string;
+  email: string;
+  temporaryPassword: string;
 };
 
 type EmployeeWelcomeWhatsappInput = {
@@ -119,18 +121,16 @@ export class NotificationsService {
     const destinations: Array<{
       channel: NotificationChannel;
       recipient: string;
-    }> = [];
-    if (input.email)
-      destinations.push({
+    }> = [
+      {
         channel: NotificationChannel.EMAIL,
         recipient: input.email,
-      });
-    if (input.phone)
-      destinations.push({
+      },
+      {
         channel: NotificationChannel.WHATSAPP,
         recipient: input.phone,
-      });
-    if (!destinations.length) return { queuedChannels: [] as string[] };
+      },
+    ];
 
     const eventType = 'CUSTOMER_WELCOME';
     const payload = {
@@ -139,23 +139,22 @@ export class NotificationsService {
       customerNumber: input.customerNumber,
       customerName: `${input.firstName} ${input.lastName ?? ''}`.trim(),
       firstName: input.firstName,
+      email: input.email,
+      phone: input.phone,
+      temporaryPassword: input.temporaryPassword,
+      loginIdentifier: input.phone,
     };
     const templates = await this.prisma.notificationTemplate.findMany({
       where: {
         organizationId: input.organizationId,
         eventType,
         channel: { in: destinations.map((item) => item.channel) },
+        status: RecordStatus.ACTIVE,
       },
     });
     const templateByChannel = new Map(
       templates.map((template) => [template.channel, template]),
     );
-    const enabledDestinations = destinations.filter((destination) => {
-      const template = templateByChannel.get(destination.channel);
-      return !template || template.status === RecordStatus.ACTIVE;
-    });
-    if (!enabledDestinations.length) return { queuedChannels: [] as string[] };
-
     await this.prisma.$transaction(async (transaction) => {
       const event = await transaction.domainEvent.create({
         data: {
@@ -163,11 +162,14 @@ export class NotificationsService {
           aggregateType: 'CUSTOMER',
           aggregateId: input.customerId,
           eventType,
-          payload,
+          payload: {
+            ...payload,
+            temporaryPassword: '[REDACTED_FROM_EVENT_PAYLOAD]',
+          },
         },
       });
       await transaction.notificationOutbox.createMany({
-        data: enabledDestinations.map((destination) => {
+        data: destinations.map((destination) => {
           const template = templateByChannel.get(destination.channel);
           const isEmail = destination.channel === NotificationChannel.EMAIL;
           return {
@@ -178,16 +180,26 @@ export class NotificationsService {
             subject: isEmail
               ? template?.subjectTemplate
                 ? this.render(template.subjectTemplate, eventType, payload)
-                : `Welcome to ${input.companyName}`
+                : `Your ${input.companyName} customer account`
               : undefined,
             body: template
               ? this.render(template.bodyTemplate, eventType, payload)
               : isEmail
-                ? `<p>Hello ${this.escapeHtml(payload.customerName)},</p><p>Thank you for being a customer of <strong>${this.escapeHtml(input.companyName)}</strong>.</p><p>Your customer number is <strong>${this.escapeHtml(input.customerNumber)}</strong>. We look forward to serving you.</p>`
-                : `Hello ${payload.customerName}! Thank you for being a customer of ${input.companyName}. Your customer number is ${input.customerNumber}. We look forward to serving you.`,
+                ? `<p>Hello ${this.escapeHtml(payload.customerName)},</p><p>Thank you for being a customer of <strong>${this.escapeHtml(input.companyName)}</strong>. Your mobile account is ready.</p><p><strong>Phone:</strong> ${this.escapeHtml(input.phone)}<br/><strong>Temporary password:</strong> <code>${this.escapeHtml(input.temporaryPassword)}</code><br/><strong>Customer number:</strong> ${this.escapeHtml(input.customerNumber)}</p><p>Sign in with your phone number and change this password immediately. Do not share it with anyone.</p>`
+                : `Hello ${payload.customerName}! Thank you for being a customer of ${input.companyName}. Your mobile account is ready. Phone: ${input.phone}. Temporary password: ${input.temporaryPassword}. Customer number: ${input.customerNumber}. Sign in and change this password immediately. Do not share it.`,
             idempotencyKey: `customer-welcome:${input.customerId}:${destination.channel}`,
           };
         }),
+      });
+      await transaction.appNotification.create({
+        data: {
+          organizationId: input.organizationId,
+          recipientUserId: input.userId,
+          eventType,
+          title: `Welcome to ${input.companyName}`,
+          message: `Your customer account ${input.customerNumber} is ready. Sign in with ${input.phone}.`,
+          actionUrl: '/customer-app/profile',
+        },
       });
       await transaction.domainEvent.update({
         where: { id: event.id },
@@ -196,7 +208,7 @@ export class NotificationsService {
     });
 
     return {
-      queuedChannels: enabledDestinations.map((item) => item.channel),
+      queuedChannels: destinations.map((item) => item.channel),
     };
   }
 
@@ -269,24 +281,29 @@ export class NotificationsService {
         eventType: 'CUSTOMER_WELCOME',
         label: 'Customer welcome',
         audience: 'Customer',
-        description: 'Sent after a new customer profile is created.',
+        description:
+          'Sends the automatically created mobile account credentials after a customer is created.',
         variables: [
           ['companyName', 'Company name', 'TechNova'],
           ['customerName', 'Customer full name', 'Saman Perera'],
           ['firstName', 'Customer first name', 'Saman'],
           ['customerNumber', 'Customer number', 'CUS-000124'],
+          ['phone', 'Mobile login phone', '+94771234567'],
+          ['email', 'Customer email', 'saman@example.com'],
+          ['temporaryPassword', 'One-time temporary password', 'Example!12345'],
+          ['loginIdentifier', 'Mobile login identifier', '+94771234567'],
         ],
         suggestions: {
           EMAIL: {
             name: 'Customer welcome email',
             subjectTemplate: 'Welcome to {{companyName}}',
             bodyTemplate:
-              'Hello {{customerName}},\n\nThank you for becoming a customer of {{companyName}}.\nYour customer number is {{customerNumber}}.\n\nWe look forward to serving you.',
+              'Hello {{customerName}},\n\nThank you for becoming a customer of {{companyName}}. Your mobile account is ready.\nPhone: {{loginIdentifier}}\nTemporary password: {{temporaryPassword}}\nCustomer number: {{customerNumber}}\n\nSign in and change this password immediately. Do not share it.',
           },
           WHATSAPP: {
             name: 'Customer welcome WhatsApp',
             bodyTemplate:
-              'Hello {{firstName}}! Thank you for becoming a customer of {{companyName}}. Your customer number is {{customerNumber}}. We look forward to serving you.',
+              'Hello {{firstName}}! Thank you for becoming a customer of {{companyName}}. Your mobile login is {{loginIdentifier}} and temporary password is {{temporaryPassword}}. Customer number: {{customerNumber}}. Change this password immediately and do not share it.',
           },
         },
       },

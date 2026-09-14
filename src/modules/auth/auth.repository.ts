@@ -21,6 +21,15 @@ export type LoginUser = Prisma.UserGetPayload<{
   include: typeof loginUserInclude;
 }>;
 
+const customerLoginUserInclude = {
+  ...loginUserInclude,
+  customerProfile: { include: { loyaltyAccount: true } },
+} satisfies Prisma.UserInclude;
+
+export type CustomerLoginUser = Prisma.UserGetPayload<{
+  include: typeof customerLoginUserInclude;
+}>;
+
 @Injectable()
 export class AuthRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -29,6 +38,20 @@ export class AuthRepository {
     return this.prisma.user.findUnique({
       where: { email },
       include: loginUserInclude,
+    });
+  }
+
+  findCustomerUserForPhone(phone: string): Promise<CustomerLoginUser | null> {
+    return this.prisma.user.findUnique({
+      where: { phone },
+      include: customerLoginUserInclude,
+    });
+  }
+
+  findCustomerProfileByUserId(userId: string) {
+    return this.prisma.customer.findUnique({
+      where: { userId },
+      include: { loyaltyAccount: true },
     });
   }
 

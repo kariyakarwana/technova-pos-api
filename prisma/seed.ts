@@ -77,6 +77,7 @@ const permissions = [
   { key: "notifications:manage", description: "Manage notification delivery" },
   { key: "reports:view", description: "View and export reports" },
   { key: "supplier-portal:access", description: "Access the assigned supplier portal" },
+  { key: "customer-app:access", description: "Access the customer mobile application" },
 ];
 
 async function main() {
@@ -125,6 +126,16 @@ async function main() {
     },
   });
 
+  const customerRole = await prisma.role.upsert({
+    where: { name: "CUSTOMER" },
+    update: { description: "Customer mobile application user", isSystem: true },
+    create: {
+      name: "CUSTOMER",
+      description: "Customer mobile application user",
+      isSystem: true,
+    },
+  });
+
   for (const permissionData of permissions) {
     const permission = await prisma.permission.upsert({
       where: {
@@ -159,6 +170,18 @@ async function main() {
         },
         update: {},
         create: { roleId: supplierRole.id, permissionId: permission.id },
+      });
+    }
+    if (permissionData.key === "customer-app:access") {
+      await prisma.rolePermission.upsert({
+        where: {
+          roleId_permissionId: {
+            roleId: customerRole.id,
+            permissionId: permission.id,
+          },
+        },
+        update: {},
+        create: { roleId: customerRole.id, permissionId: permission.id },
       });
     }
   }

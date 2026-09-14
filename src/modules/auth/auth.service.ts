@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { AuditOutcome, UserStatus } from '@prisma/client';
+import { AuditOutcome, RecordStatus, UserStatus } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import nodemailer from 'nodemailer';
 
@@ -23,7 +23,12 @@ import {
   PASSWORD_RESET_GRANT_LIFETIME_MS,
 } from '../../common/security/token';
 import type { SecurityRequestContext } from '../../common/security/request';
-import { AuthRepository, type LoginUser } from './auth.repository';
+import { normalizePhone } from '../../common/security/phone';
+import {
+  AuthRepository,
+  type CustomerLoginUser,
+  type LoginUser,
+} from './auth.repository';
 
 const ACCESS_TOKEN_LIFETIME_SECONDS = 15 * 60;
 const REFRESH_TOKEN_LIFETIME_MS = 8 * 60 * 60 * 1000;
@@ -42,6 +47,7 @@ type LoginResult = {
     id: string;
     email: string;
     name: string | null;
+    phone: string | null;
     roles: string[];
     permissions: string[];
     mustChangePassword: boolean;
@@ -58,8 +64,61 @@ export class AuthService {
 
   async login(input: LoginInput): Promise<LoginResult> {
     const email = input.email.trim().toLowerCase();
-    const identityHash = createHash('sha256').update(email).digest('hex');
     const user = await this.repository.findUserForLogin(email);
+    return this.authenticateAndIssue({
+      user,
+      password: input.password,
+      identity: email,
+      attemptAction: 'LOGIN',
+      invalidMessage: 'Invalid email or password.',
+      context: input.context,
+    });
+  }
+
+  async loginCustomer(input: {
+    phone: string;
+    password: string;
+    context: SecurityRequestContext;
+  }) {
+    const phone = normalizePhone(input.phone);
+    const user = await this.repository.findCustomerUserForPhone(phone);
+    const result = await this.authenticateAndIssue({
+      user,
+      password: input.password,
+      identity: phone,
+      attemptAction: 'CUSTOMER_LOGIN',
+      invalidMessage: 'Invalid phone number or password.',
+      context: input.context,
+      customerOnly: true,
+    });
+    const customer = user?.customerProfile;
+    if (!customer)
+      throw new UnauthorizedException('Invalid phone number or password.');
+    return {
+      ...result,
+      customer: {
+        id: customer.id,
+        customerNumber: customer.customerNumber,
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        loyaltyPoints: customer.loyaltyAccount?.points ?? 0,
+      },
+    };
+  }
+
+  private async authenticateAndIssue(input: {
+    user: LoginUser | CustomerLoginUser | null;
+    password: string;
+    identity: string;
+    attemptAction: 'LOGIN' | 'CUSTOMER_LOGIN';
+    invalidMessage: string;
+    context: SecurityRequestContext;
+    customerOnly?: boolean;
+  }): Promise<LoginResult> {
+    const identityHash = createHash('sha256')
+      .update(input.identity)
+      .digest('hex');
+    const user = input.user;
     const passwordMatches =
       user?.passwordHash != null
         ? await verifyPassword(input.password, user.passwordHash)
@@ -69,20 +128,23 @@ export class AuthService {
       if (user) await this.repository.recordFailedLogin(user.id);
 
       await this.repository.recordAttempt({
-        action: 'LOGIN',
+        action: input.attemptAction,
         identityHash,
         ipHash: input.context.ipHash,
         successful: false,
       });
       await this.repository.createAuditEvent({
         userId: user?.id,
-        action: 'AUTH_LOGIN_FAILED',
+        action:
+          input.attemptAction === 'CUSTOMER_LOGIN'
+            ? 'AUTH_CUSTOMER_LOGIN_FAILED'
+            : 'AUTH_LOGIN_FAILED',
         outcome: AuditOutcome.FAILURE,
         ipHash: input.context.ipHash,
         userAgent: input.context.userAgent,
       });
 
-      throw new UnauthorizedException('Invalid email or password.');
+      throw new UnauthorizedException(input.invalidMessage);
     }
 
     if (user.status !== UserStatus.ACTIVE) {
@@ -95,6 +157,15 @@ export class AuthService {
 
     if (!user.emailVerified) {
       throw new ForbiddenException('Verify your email before signing in.');
+    }
+
+    if (
+      input.customerOnly &&
+      (!('customerProfile' in user) ||
+        !user.customerProfile ||
+        user.customerProfile.status !== RecordStatus.ACTIVE)
+    ) {
+      throw new ForbiddenException('This customer account is not active.');
     }
 
     const roles = user.roles.map(({ role }) => role.name);
@@ -133,14 +204,17 @@ export class AuthService {
 
     await this.repository.recordSuccessfulLogin(user.id);
     await this.repository.recordAttempt({
-      action: 'LOGIN',
+      action: input.attemptAction,
       identityHash,
       ipHash: input.context.ipHash,
       successful: true,
     });
     await this.repository.createAuditEvent({
       userId: user.id,
-      action: 'AUTH_LOGIN_SUCCEEDED',
+      action:
+        input.attemptAction === 'CUSTOMER_LOGIN'
+          ? 'AUTH_CUSTOMER_LOGIN_SUCCEEDED'
+          : 'AUTH_LOGIN_SUCCEEDED',
       outcome: AuditOutcome.SUCCESS,
       ipHash: input.context.ipHash,
       userAgent: input.context.userAgent,
@@ -154,6 +228,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
+        phone: user.phone,
         roles,
         permissions,
         mustChangePassword: user.mustChangePassword,
@@ -204,6 +279,27 @@ export class AuthService {
     });
 
     return this.buildLoginResult(session.user, refreshToken);
+  }
+
+  async refreshCustomer(rawToken: string, context: SecurityRequestContext) {
+    const result = await this.refresh(rawToken, context);
+    if (!result.user.roles.includes('CUSTOMER'))
+      throw new UnauthorizedException('The customer session is invalid.');
+    const customer = await this.repository.findCustomerProfileByUserId(
+      result.user.id,
+    );
+    if (!customer || customer.status !== RecordStatus.ACTIVE)
+      throw new UnauthorizedException('The customer session is invalid.');
+    return {
+      ...result,
+      customer: {
+        id: customer.id,
+        customerNumber: customer.customerNumber,
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        loyaltyPoints: customer.loyaltyAccount?.points ?? 0,
+      },
+    };
   }
 
   async logout(
@@ -470,6 +566,7 @@ export class AuthService {
       id: user.id,
       email: user.email,
       name: user.name,
+      phone: user.phone,
       roles: user.roles.map(({ role }) => role.name),
       permissions: [
         ...new Set(

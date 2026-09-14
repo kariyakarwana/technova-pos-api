@@ -57,10 +57,7 @@ export class NotificationWorkerService
         status: RecordStatus.ACTIVE,
         promotionNotifiedAt: null,
         OR: [{ startsAt: null }, { startsAt: { lte: now } }],
-        AND: [
-          { OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
-          { OR: [{ notifyEmail: true }, { notifyWhatsapp: true }] },
-        ],
+        AND: [{ OR: [{ endsAt: null }, { endsAt: { gte: now } }] }],
       },
       include: { organization: true, product: true },
     });
@@ -69,10 +66,10 @@ export class NotificationWorkerService
         where: {
           organizationId: promotion.organizationId,
           status: RecordStatus.ACTIVE,
-          OR: [{ email: { not: null } }, { phone: { not: null } }],
         },
         select: {
           id: true,
+          userId: true,
           firstName: true,
           lastName: true,
           email: true,
@@ -189,6 +186,21 @@ export class NotificationWorkerService
             })),
             skipDuplicates: true,
           });
+        const inAppRecipients = customers.filter(
+          (customer) => customer.userId !== null,
+        );
+        if (inAppRecipients.length)
+          await transaction.appNotification.createMany({
+            data: inAppRecipients.map((customer) => ({
+              organizationId: promotion.organizationId,
+              recipientUserId: customer.userId!,
+              eventType: 'PROMOTION_STARTED',
+              title: promotion.name,
+              message: `${offer} on ${payload.product}.${promotion.code ? ` Use code ${promotion.code}.` : ''}`,
+              actionUrl: `/customer-app/promotions/${promotion.id}`,
+            })),
+            skipDuplicates: true,
+          });
         await transaction.discountRule.update({
           where: { id: promotion.id },
           data: { promotionNotifiedAt: now },
@@ -274,6 +286,17 @@ export class NotificationWorkerService
           idempotencyKey: key,
         },
       });
+      if (customer.userId)
+        await this.prisma.appNotification.create({
+          data: {
+            organizationId: customer.organizationId,
+            recipientUserId: customer.userId,
+            eventType: 'CREDIT_PAYMENT_REMINDER',
+            title: 'Credit payment reminder',
+            message: `Payment of LKR ${payload.amountDue.toLocaleString()} is due on ${item.dueDate.toLocaleDateString('en-LK')}.`,
+            actionUrl: `/customer-app/credit-purchases/${item.creditAgreementId}`,
+          },
+        });
     }
   }
   private async lowStockAlerts() {

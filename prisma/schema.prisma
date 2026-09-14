@@ -196,7 +196,7 @@ model User {
   id            String     @id @default(cuid())
   email         String     @unique
   name          String?
-  phone         String?
+  phone         String?    @unique
   passwordHash  String?
   image         String?
   emailVerified DateTime?
@@ -227,6 +227,7 @@ model User {
   stockMovements            StockMovement[]
   offlineSyncBatches        OfflineSyncBatch[]
   supplierMembership        SupplierUser?
+  customerProfile           Customer?
   supplierResponses         SupplierOrderResponse[] @relation("SupplierResponseAuthor")
   reviewedSupplierResponses SupplierOrderResponse[] @relation("SupplierResponseReviewer")
   supplierShipments         SupplierShipment[]      @relation("SupplierShipmentDispatcher")
@@ -962,6 +963,7 @@ model StockTransferItem {
 model Customer {
   id                      String                   @id @default(cuid())
   organizationId          String
+  userId                  String?                  @unique
   customerNumber          String
   firstName               String
   lastName                String?
@@ -973,6 +975,7 @@ model Customer {
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   organization            Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                    User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
   loyaltyAccount          LoyaltyAccount?
   sales                   Sale[]
   creditAgreements        CreditAgreement[]
@@ -1269,7 +1272,7 @@ model Warranty {
   warrantyPolicyId    String
   inventoryUnitId     String          @unique
   saleItemId          String          @unique
-  customerId          String
+  customerId          String?
   status              WarrantyStatus  @default(PENDING)
   activationTokenHash String?         @unique
   activationExpiresAt DateTime?
@@ -1282,7 +1285,7 @@ model Warranty {
   warrantyPolicy      WarrantyPolicy  @relation(fields: [warrantyPolicyId], references: [id])
   inventoryUnit       InventoryUnit   @relation(fields: [inventoryUnitId], references: [id])
   saleItem            SaleItem        @relation(fields: [saleItemId], references: [id])
-  customer            Customer        @relation(fields: [customerId], references: [id])
+  customer            Customer?       @relation(fields: [customerId], references: [id])
   events              WarrantyEvent[]
   accessGrants        QrAccessGrant[]
 

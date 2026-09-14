@@ -55,7 +55,7 @@ export class VisualThemesService {
               organizationId,
               name: 'Default',
               isDefault: true,
-              tokens: DEFAULT_VISUAL_THEME_TOKENS as unknown as Prisma.InputJsonValue,
+              tokens: DEFAULT_VISUAL_THEME_TOKENS,
             },
           });
         });

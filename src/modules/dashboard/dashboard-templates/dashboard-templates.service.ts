@@ -53,7 +53,7 @@ export class DashboardTemplatesService {
               'Standard Technova POS overview layout with KPIs, trends, and sales analytics.',
             category: 'Overview',
             isSystem: true,
-            layout: DEFAULT_DASHBOARD_TEMPLATE_LAYOUT as unknown as Prisma.InputJsonValue,
+            layout: DEFAULT_DASHBOARD_TEMPLATE_LAYOUT,
           },
         });
       }
