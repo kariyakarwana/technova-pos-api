@@ -190,6 +190,43 @@ export class CatalogService {
     if (!product) throw new NotFoundException('Product not found.');
     return product;
   }
+
+  async productImage(userId: string, productId: string, imageId: string) {
+    const organizationId = await this.organizationId(userId);
+    const image = await this.prisma.productImage.findFirst({
+      where: {
+        id: imageId,
+        productId,
+        product: { organizationId },
+      },
+    });
+    if (!image) throw new NotFoundException('Product image not found.');
+    if (!image.bucket || !image.objectKey) {
+      throw new NotFoundException('This product image is not stored locally.');
+    }
+    return {
+      stream: await this.storage.open(image.bucket, image.objectKey),
+      contentType: image.contentType ?? 'application/octet-stream',
+      sizeBytes: image.sizeBytes ?? undefined,
+    };
+  }
+
+  async productVideo(userId: string, productId: string, videoId: string) {
+    const organizationId = await this.organizationId(userId);
+    const video = await this.prisma.productVideo.findFirst({
+      where: {
+        id: videoId,
+        productId,
+        product: { organizationId },
+      },
+    });
+    if (!video) throw new NotFoundException('Product video not found.');
+    return {
+      stream: await this.storage.open(video.bucket, video.objectKey),
+      contentType: video.contentType,
+      sizeBytes: video.sizeBytes,
+    };
+  }
   async createProduct(
     actor: AuthenticatedUser,
     dto: CreateProductDto,

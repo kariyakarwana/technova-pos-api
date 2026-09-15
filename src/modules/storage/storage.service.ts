@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -144,6 +145,26 @@ export class StorageService implements OnModuleInit {
     } catch (error) {
       this.logger.warn(
         `Unable to remove orphaned object ${objectKey}. ${error instanceof Error ? error.message : ''}`,
+      );
+    }
+  }
+
+  async open(bucket: string, objectKey: string) {
+    try {
+      return await this.client.getObject(bucket, objectKey);
+    } catch (error) {
+      const normalizedError: unknown = error;
+      const code =
+        normalizedError &&
+        typeof normalizedError === 'object' &&
+        'code' in normalizedError
+          ? String((normalizedError as Record<string, unknown>).code)
+          : '';
+      if (code === 'NoSuchKey' || code === 'NotFound') {
+        throw new NotFoundException('The requested media file was not found.');
+      }
+      throw new ServiceUnavailableException(
+        `Unable to read the media file from object storage. ${normalizedError instanceof Error ? normalizedError.message : ''}`,
       );
     }
   }

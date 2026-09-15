@@ -6,6 +6,7 @@ import {
   Patch,
   Post,
   Req,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -32,6 +33,16 @@ export class OrganizationsController {
   @RequirePermissions('settings:view')
   get(@CurrentUser() user: AuthenticatedUser) {
     return this.organizations.getForUser(user.id);
+  }
+
+  @Get('logo/content')
+  async getLogo(@CurrentUser() user: AuthenticatedUser) {
+    const logo = await this.organizations.getLogoForUser(user.id);
+    return new StreamableFile(logo.stream, {
+      type: logo.contentType,
+      length: logo.sizeBytes,
+      disposition: 'inline',
+    });
   }
 
   @Patch()

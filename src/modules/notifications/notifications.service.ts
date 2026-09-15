@@ -656,9 +656,15 @@ export class NotificationsService {
   async processPending(limit = 20) {
     const rows = await this.prisma.notificationOutbox.findMany({
       where: {
+        channel: {
+          in: [NotificationChannel.EMAIL, NotificationChannel.WHATSAPP],
+        },
         status: { in: [OutboxStatus.PENDING, OutboxStatus.FAILED] },
         nextAttemptAt: { lte: new Date() },
         attemptCount: { lt: 5 },
+      },
+      include: {
+        domainEvent: { select: { eventType: true, payload: true } },
       },
       take: limit,
       orderBy: { createdAt: 'asc' },
@@ -678,6 +684,8 @@ export class NotificationsService {
           row.recipient,
           row.subject,
           row.body,
+          row.domainEvent?.eventType,
+          row.domainEvent?.payload,
         );
         await this.prisma.$transaction([
           this.prisma.deliveryAttempt.create({
@@ -755,7 +763,7 @@ export class NotificationsService {
       templateName:
         provider === 'whatchimp'
           ? (this.config.get<string>('WHATCHIMP_TEMPLATE_NAME') ?? null)
-          : null,
+          : (this.config.get<string>('WHATSAPP_TEMPLATE_NAME') ?? null),
     };
   }
   async webhook(
@@ -793,6 +801,8 @@ export class NotificationsService {
     to: string,
     subject: string | null,
     body: string,
+    eventType?: string,
+    payload?: Prisma.JsonValue,
   ) {
     if (channel === NotificationChannel.EMAIL) {
       const transporter = nodemailer.createTransport({
@@ -822,6 +832,67 @@ export class NotificationsService {
         phoneId = this.config.getOrThrow<string>('WHATSAPP_PHONE_NUMBER_ID'),
         apiVersion =
           this.config.get<string>('WHATSAPP_GRAPH_API_VERSION') ?? 'v23.0';
+      const eventSuffix = eventType?.replace(/[^A-Z0-9_]/gi, '_').toUpperCase();
+      const templateName =
+        (eventSuffix
+          ? this.config.get<string>(`WHATSAPP_TEMPLATE_NAME_${eventSuffix}`)
+          : undefined) ?? this.config.get<string>('WHATSAPP_TEMPLATE_NAME');
+      const languageCode =
+        (eventSuffix
+          ? this.config.get<string>(`WHATSAPP_TEMPLATE_LANGUAGE_${eventSuffix}`)
+          : undefined) ??
+        this.config.get<string>('WHATSAPP_TEMPLATE_LANGUAGE') ??
+        'en_US';
+      const parameterSetting =
+        (eventSuffix
+          ? this.config.get<string>(
+              `WHATSAPP_TEMPLATE_HAS_BODY_PARAMETER_${eventSuffix}`,
+            )
+          : undefined) ??
+        this.config.get<string>('WHATSAPP_TEMPLATE_HAS_BODY_PARAMETER');
+      const templateHasBodyParameter = parameterSetting !== 'false';
+      const parameterKeys = (
+        (eventSuffix
+          ? this.config.get<string>(
+              `WHATSAPP_TEMPLATE_PARAMETER_KEYS_${eventSuffix}`,
+            )
+          : undefined) ??
+        this.config.get<string>('WHATSAPP_TEMPLATE_PARAMETER_KEYS') ??
+        ''
+      )
+        .split(',')
+        .map((key) => key.trim())
+        .filter(Boolean);
+      const bodyParameters = parameterKeys.length
+        ? parameterKeys.map((key) => ({
+            type: 'text',
+            text: this.whatsappParameter(payload, key),
+          }))
+        : [{ type: 'text', text: body.slice(0, 1024) }];
+      const message = templateName
+        ? {
+            messaging_product: 'whatsapp',
+            to: to.replace(/\D/g, ''),
+            type: 'template',
+            template: {
+              name: templateName,
+              language: { code: languageCode },
+              components: templateHasBodyParameter
+                ? [
+                    {
+                      type: 'body',
+                      parameters: bodyParameters,
+                    },
+                  ]
+                : undefined,
+            },
+          }
+        : {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'text',
+            text: { body },
+          };
       const response = await fetch(
         `https://graph.facebook.com/${apiVersion}/${phoneId}/messages`,
         {
@@ -830,12 +901,7 @@ export class NotificationsService {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            messaging_product: 'whatsapp',
-            to,
-            type: 'text',
-            text: { body },
-          }),
+          body: JSON.stringify(message),
         },
       );
       if (!response.ok)
@@ -890,6 +956,19 @@ export class NotificationsService {
         result?.message ?? `WhatChimp delivery failed (${response.status}).`,
       );
     return result?.wa_message_id ?? 'accepted';
+  }
+
+  private whatsappParameter(
+    payload: Prisma.JsonValue | undefined,
+    key: string,
+  ) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+      return '-';
+    const value = (payload as Prisma.InputJsonObject)[key];
+    if (typeof value === 'string') return value.slice(0, 1024);
+    if (typeof value === 'number' || typeof value === 'boolean')
+      return String(value);
+    return '-';
   }
   private render(
     template: string,
