@@ -135,6 +135,20 @@ export class CatalogController {
     return this.catalog.updateProduct(u, id, d, getSecurityRequestContext(r));
   }
 
+  @Post('products/:id/barcode/generate')
+  @RequirePermissions('products:manage')
+  generateProductBarcode(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Req() r: Request,
+  ) {
+    return this.catalog.generateProductBarcode(
+      u,
+      id,
+      getSecurityRequestContext(r),
+    );
+  }
+
   @Post('products/:id/images')
   @RequirePermissions('products:manage')
   @UseInterceptors(

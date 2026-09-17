@@ -19,6 +19,7 @@ import {
   UpdateCategoryDto,
   UpdateProductDto,
 } from './dto/catalog.dto';
+import { createInternalBarcode } from './barcode';
 
 @Injectable()
 export class CatalogService {
@@ -343,6 +344,69 @@ export class CatalogService {
       metadata: { productId: id },
     });
     return value;
+  }
+
+  async generateProductBarcode(
+    actor: AuthenticatedUser,
+    productId: string,
+    context: SecurityRequestContext,
+  ) {
+    const organizationId = await this.organizationId(actor.id);
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, organizationId },
+      select: { id: true, barcode: true },
+    });
+    if (!product) throw new NotFoundException('Product not found.');
+    if (product.barcode) {
+      return { id: product.id, barcode: product.barcode, generated: false };
+    }
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const barcode = createInternalBarcode();
+      try {
+        const result = await this.prisma.$transaction(async (tx) => {
+          const updated = await tx.product.updateMany({
+            where: { id: productId, organizationId, barcode: null },
+            data: { barcode },
+          });
+          if (updated.count === 1) {
+            return { id: productId, barcode, generated: true };
+          }
+          const current = await tx.product.findFirst({
+            where: { id: productId, organizationId },
+            select: { id: true, barcode: true },
+          });
+          if (!current?.barcode) {
+            throw new ConflictException('Unable to generate a barcode.');
+          }
+          return {
+            id: current.id,
+            barcode: current.barcode,
+            generated: false,
+          };
+        });
+        if (result.generated) {
+          await this.audit.record({
+            userId: actor.id,
+            action: 'PRODUCT_BARCODE_GENERATED',
+            context,
+            metadata: { productId, barcode: result.barcode },
+          });
+        }
+        return result;
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new ConflictException(
+      'Unable to generate a unique barcode. Please try again.',
+    );
   }
 
   async uploadProductImage(
