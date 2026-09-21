@@ -25,6 +25,7 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { WarrantiesModule } from './modules/warranties/warranties.module';
 import { UsersModule } from './modules/users/users.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { AiIntelligenceModule } from './modules/ai-intelligence/ai-intelligence.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     WarrantiesModule,
     UsersModule,
     DashboardModule,
+    AiIntelligenceModule,
     HealthModule,
   ],
 })
