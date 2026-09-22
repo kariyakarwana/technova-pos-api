@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   Req,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -90,6 +91,34 @@ export class CatalogController {
   ) {
     return this.catalog.product(u.id, id);
   }
+
+  @Get('products/:id/images/:imageId/content')
+  async productImage(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('imageId') imageId: string,
+  ) {
+    const media = await this.catalog.productImage(u.id, id, imageId);
+    return new StreamableFile(media.stream, {
+      type: media.contentType,
+      length: media.sizeBytes,
+      disposition: 'inline',
+    });
+  }
+
+  @Get('products/:id/videos/:videoId/content')
+  async productVideo(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('videoId') videoId: string,
+  ) {
+    const media = await this.catalog.productVideo(u.id, id, videoId);
+    return new StreamableFile(media.stream, {
+      type: media.contentType,
+      length: media.sizeBytes,
+      disposition: 'inline',
+    });
+  }
   @Post('products') @RequirePermissions('products:manage') createProduct(
     @CurrentUser() u: AuthenticatedUser,
     @Body() d: CreateProductDto,
@@ -104,6 +133,20 @@ export class CatalogController {
     @Req() r: Request,
   ) {
     return this.catalog.updateProduct(u, id, d, getSecurityRequestContext(r));
+  }
+
+  @Post('products/:id/barcode/generate')
+  @RequirePermissions('products:manage')
+  generateProductBarcode(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Req() r: Request,
+  ) {
+    return this.catalog.generateProductBarcode(
+      u,
+      id,
+      getSecurityRequestContext(r),
+    );
   }
 
   @Post('products/:id/images')

@@ -164,12 +164,12 @@ export class SalesService {
           images: {
             orderBy: { position: 'asc' },
             take: 1,
-            select: { url: true },
+            select: { id: true, url: true, objectKey: true },
           },
           videos: {
             orderBy: { createdAt: 'asc' },
             take: 1,
-            select: { url: true },
+            select: { id: true, url: true },
           },
           stockLevels: {
             where: { branchId },
@@ -508,7 +508,8 @@ export class SalesService {
             data: {
               warrantyId: warranty.id,
               eventType: 'ACTIVATED_AT_SALE',
-              notes: 'Warranty started automatically when the POS sale completed.',
+              notes:
+                'Warranty started automatically when the POS sale completed.',
               metadata: {
                 saleId: sale.id,
                 saleItemId: item.id,
@@ -640,7 +641,11 @@ export class SalesService {
       userId: actor.id,
       action: 'SALE_COMPLETED',
       context,
-      metadata: { saleId: result.saleId, invoiceNumber: result.invoiceNumber },
+      metadata: {
+        saleId: result.saleId,
+        invoiceNumber: result.invoiceNumber,
+        total: Number(result.total).toFixed(2),
+      },
     });
     return result;
   }

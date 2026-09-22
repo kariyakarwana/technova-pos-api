@@ -111,6 +111,22 @@ export class OrganizationsService {
     return updated;
   }
 
+  async getLogoForUser(userId: string) {
+    const current = await this.getForUser(userId);
+    const branding = current.branding;
+    if (!branding?.logoBucket || !branding.logoObjectKey) {
+      throw new NotFoundException('No company logo has been uploaded.');
+    }
+    return {
+      stream: await this.storage.open(
+        branding.logoBucket,
+        branding.logoObjectKey,
+      ),
+      contentType: branding.logoContentType ?? 'application/octet-stream',
+      sizeBytes: branding.logoSizeBytes ?? undefined,
+    };
+  }
+
   async removeLogo(actor: AuthenticatedUser, context: SecurityRequestContext) {
     const current = await this.getForUser(actor.id);
     const updated = await this.prisma.organization.update({
