@@ -26,7 +26,7 @@ import { WarrantiesModule } from './modules/warranties/warranties.module';
 import { UsersModule } from './modules/users/users.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AiIntelligenceModule } from './modules/ai-intelligence/ai-intelligence.module';
-import { SalesForecastingModule } from './modules/sales-forecasting/sales-forecasting.module';
+import { SalesForecastingModule } from './modules/ai-intelligence/sales-forecasting/sales-forecasting.module';
 
 @Module({
   imports: [

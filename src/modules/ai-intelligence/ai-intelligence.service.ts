@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { RecordStatus, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma/prisma.service';
-import { SalesDataExtractionService } from '../sales-forecasting/sales-data-extraction.service';
+import { SalesDataExtractionService } from './sales-forecasting/sales-data-extraction.service';
 import { DemandDataExtractionService } from './demand-data-extraction.service';
 import {
   DemandForecastOptions,
