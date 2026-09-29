@@ -1,6 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
-import { SalesDataExtractionService } from '../sales-forecasting/sales-data-extraction.service';
+import { SalesDataExtractionService } from './sales-forecasting/sales-data-extraction.service';
 import { AiIntelligenceController } from './ai-intelligence.controller';
 import { AiIntelligenceService } from './ai-intelligence.service';
 

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SaleStatus } from '@prisma/client';
-import { PrismaService } from '../../database/prisma/prisma.service';
+import { PrismaService } from '../../../database/prisma/prisma.service';
 import {
   BranchDailyRevenueRow,
   BranchSummaryReport,
