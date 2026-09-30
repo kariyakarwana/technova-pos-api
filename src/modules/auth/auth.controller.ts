@@ -33,9 +33,13 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 
 const REFRESH_COOKIE = 'technova_refresh';
+const SECURE_AUTH_COOKIES =
+  process.env.AUTH_COOKIE_SECURE === 'true' ||
+  (process.env.AUTH_COOKIE_SECURE == null &&
+    process.env.NODE_ENV === 'production');
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  secure: SECURE_AUTH_COOKIES,
   sameSite: 'lax' as const,
   path: '/',
   maxAge: 8 * 60 * 60 * 1000,
@@ -171,7 +175,41 @@ export class AuthController {
     );
     response.cookie('technova_access', result.accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: SECURE_AUTH_COOKIES,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: result.expiresIn * 1000,
+    });
+    response.redirect(
+      `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/dashboard`,
+    );
+  }
+
+  @Get('microsoft')
+  async microsoft(@Res() response: Response) {
+    response.redirect(await this.authService.microsoftAuthorizationUrl());
+  }
+
+  @Get('microsoft/callback')
+  async microsoftCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    const result = await this.authService.microsoftCallback(
+      code,
+      state,
+      getSecurityRequestContext(request),
+    );
+    response.cookie(
+      REFRESH_COOKIE,
+      result.refreshToken,
+      REFRESH_COOKIE_OPTIONS,
+    );
+    response.cookie('technova_access', result.accessToken, {
+      httpOnly: true,
+      secure: SECURE_AUTH_COOKIES,
       sameSite: 'lax',
       path: '/',
       maxAge: result.expiresIn * 1000,

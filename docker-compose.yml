@@ -6,32 +6,38 @@ services:
     container_name: technova-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: technova_pos
-      POSTGRES_USER: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-technova_pos}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "${DOCKER_POSTGRES_PORT:-5432}:5432"
     volumes:
       - technova_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d technova_pos"]
-      interval: 10s
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-technova_pos}",
+        ]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
+    networks: [technova]
 
   minio:
     image: quay.io/minio/minio
     container_name: technova-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${DOCKER_MINIO_PORT:-9000}:9000"
+      - "${DOCKER_MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
+    networks: [technova]
 
   minio-init:
     image: quay.io/minio/mc
@@ -55,6 +61,108 @@ services:
       /usr/bin/mc admin policy attach local readwrite --user $$MINIO_ACCESS_KEY;
       exit 0;
       "
+    restart: "no"
+    networks: [technova]
+
+  ai-service:
+    build:
+      context: ../technova-ai-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      TECHNOVA_AI_DATA_DIR: /app/data
+      TECHNOVA_AI_ARTIFACT_DIR: /app/artifacts
+    ports:
+      - "${DOCKER_AI_PORT:-8000}:8000"
+    volumes:
+      - ../technova-ai-service/artifacts:/app/artifacts:ro
+      - ../technova-ai-service/data/processed:/app/data/processed:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)",
+        ]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
+    init: true
+    networks: [technova]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: build
+    command: ["npx", "prisma", "migrate", "deploy"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-technova_pos}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [technova]
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      FRONTEND_URL: ${DOCKER_FRONTEND_URL:-http://localhost:3000}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-technova_pos}?schema=public
+      AI_SERVICE_URL: http://ai-service:8000
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_PUBLIC_URL: ${DOCKER_MINIO_PUBLIC_URL:-http://localhost:9000}
+    ports:
+      - "${DOCKER_BACKEND_PORT:-4000}:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ai-service:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    init: true
+    networks: [technova]
+
+  frontend:
+    build:
+      context: ../technova-pos
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      INTERNAL_API_URL: http://backend:4000/api/v1
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
+    ports:
+      - "${DOCKER_FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    networks: [technova]
+
+networks:
+  technova:
+    driver: bridge
 
 volumes:
   technova_postgres_data:

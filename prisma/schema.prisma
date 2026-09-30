@@ -292,7 +292,7 @@ model RolePermission {
 }
 
 // Auth.js OAuth account.
-// Google account information will be stored here.
+// Google and Microsoft OAuth account links are stored here.
 model Account {
   id                String @id @default(cuid())
   userId            String
@@ -443,36 +443,37 @@ model AuditEvent {
 }
 
 model Organization {
-  id                    String                 @id @default(cuid())
-  name                  String
-  registrationNumber    String?                @unique
-  phone                 String?
-  email                 String?
-  address               Json?
-  timezone              String                 @default("Asia/Colombo")
-  currencyCode          String                 @default("LKR") @db.VarChar(3)
+  id                                String                 @id @default(cuid())
+  name                              String
+  registrationNumber                String?                @unique
+  phone                             String?
+  email                             String?
+  address                           Json?
+  timezone                          String                 @default("Asia/Colombo")
+  currencyCode                      String                 @default("LKR") @db.VarChar(3)
   status                            RecordStatus           @default(ACTIVE)
   supplierPortalEnabled             Boolean                @default(true)
   supplierOrderChangesEnabled       Boolean                @default(true)
   supplierEmailNotificationsEnabled Boolean                @default(true)
   supplierInAppNotificationsEnabled Boolean                @default(true)
   createdAt                         DateTime               @default(now())
-  updatedAt             DateTime               @updatedAt
-  branding              BrandingAsset?
-  branches              Branch[]
-  users                 OrganizationUser[]
-  categories            Category[]
-  brands                Brand[]
-  products              Product[]
-  suppliers             Supplier[]
-  customers             Customer[]
-  discountRules         DiscountRule[]
-  notificationTemplates NotificationTemplate[]
-  domainEvents          DomainEvent[]
-  appNotifications      AppNotification[]
-  dashboards            Dashboard[]
-  dashboardTemplates    DashboardTemplate[]
-  visualThemes          VisualTheme[]
+  updatedAt                         DateTime               @updatedAt
+  branding                          BrandingAsset?
+  branches                          Branch[]
+  users                             OrganizationUser[]
+  categories                        Category[]
+  brands                            Brand[]
+  products                          Product[]
+  suppliers                         Supplier[]
+  customers                         Customer[]
+  discountRules                     DiscountRule[]
+  loyaltyRules                      LoyaltyRule[]
+  notificationTemplates             NotificationTemplate[]
+  domainEvents                      DomainEvent[]
+  appNotifications                  AppNotification[]
+  dashboards                        Dashboard[]
+  dashboardTemplates                DashboardTemplate[]
+  visualThemes                      VisualTheme[]
 
   @@index([status])
   @@map("organizations")
@@ -1025,6 +1026,22 @@ model LoyaltyAccount {
   @@map("loyalty_accounts")
 }
 
+model LoyaltyRule {
+  id                      String       @id @default(cuid())
+  organizationId          String
+  name                    String
+  spendAmount             Decimal      @db.Decimal(18, 2)
+  pointsAwarded           Int
+  redemptionValuePerPoint Decimal      @default(1) @db.Decimal(18, 2)
+  status                  RecordStatus @default(ACTIVE)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  organization            Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@map("loyalty_rules")
+}
+
 model LoyaltyTransaction {
   id               String         @id @default(cuid())
   loyaltyAccountId String
@@ -1040,29 +1057,31 @@ model LoyaltyTransaction {
 }
 
 model Sale {
-  id              String           @id @default(cuid())
-  branchId        String
-  customerId      String?
-  createdById     String
-  invoiceNumber   String           @unique
-  status          SaleStatus       @default(DRAFT)
-  subtotal        Decimal          @default(0) @db.Decimal(18, 2)
-  discountTotal   Decimal          @default(0) @db.Decimal(18, 2)
-  taxTotal        Decimal          @default(0) @db.Decimal(18, 2)
-  total           Decimal          @default(0) @db.Decimal(18, 2)
-  paidTotal       Decimal          @default(0) @db.Decimal(18, 2)
-  balanceDue      Decimal          @default(0) @db.Decimal(18, 2)
-  completedAt     DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  branch          Branch           @relation(fields: [branchId], references: [id])
-  customer        Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  createdBy       User             @relation("SaleCreator", fields: [createdById], references: [id])
-  items           SaleItem[]
-  payments        Payment[]
-  returns         Return[]
-  creditAgreement CreditAgreement?
-  receipt         Receipt?
+  id                     String           @id @default(cuid())
+  branchId               String
+  customerId             String?
+  createdById            String
+  invoiceNumber          String           @unique
+  status                 SaleStatus       @default(DRAFT)
+  subtotal               Decimal          @default(0) @db.Decimal(18, 2)
+  discountTotal          Decimal          @default(0) @db.Decimal(18, 2)
+  taxTotal               Decimal          @default(0) @db.Decimal(18, 2)
+  total                  Decimal          @default(0) @db.Decimal(18, 2)
+  paidTotal              Decimal          @default(0) @db.Decimal(18, 2)
+  balanceDue             Decimal          @default(0) @db.Decimal(18, 2)
+  loyaltyPointsRedeemed  Int              @default(0)
+  loyaltyRedemptionValue Decimal          @default(0) @db.Decimal(18, 2)
+  completedAt            DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  branch                 Branch           @relation(fields: [branchId], references: [id])
+  customer               Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  createdBy              User             @relation("SaleCreator", fields: [createdById], references: [id])
+  items                  SaleItem[]
+  payments               Payment[]
+  returns                Return[]
+  creditAgreement        CreditAgreement?
+  receipt                Receipt?
 
   @@index([branchId, createdAt])
   @@index([customerId, createdAt])

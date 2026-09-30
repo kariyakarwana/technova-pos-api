@@ -222,16 +222,17 @@ export class AuthRepository {
     ]);
   }
 
-  async linkGoogleAccount(
+  async linkOAuthAccount(
     userId: string,
+    provider: 'google' | 'microsoft',
     providerAccountId: string,
   ): Promise<void> {
     await this.prisma.account.upsert({
       where: {
-        provider_providerAccountId: { provider: 'google', providerAccountId },
+        provider_providerAccountId: { provider, providerAccountId },
       },
       update: { userId },
-      create: { userId, type: 'oauth', provider: 'google', providerAccountId },
+      create: { userId, type: 'oauth', provider, providerAccountId },
     });
   }
 

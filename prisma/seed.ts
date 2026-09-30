@@ -44,7 +44,7 @@ const permissions = [
   },
   {
     key: "sales:manage",
-    description: "Manage sales transactions",
+    description: "Access Point of Sale, prepare quotes, and complete sales",
   },
   {
     key: "inventory:manage",
