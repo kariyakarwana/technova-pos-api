@@ -26,6 +26,8 @@ import { WarrantiesModule } from './modules/warranties/warranties.module';
 import { UsersModule } from './modules/users/users.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AiIntelligenceModule } from './modules/ai-intelligence/ai-intelligence.module';
+import { SalesForecastingModule } from './modules/ai-intelligence/sales-forecasting/sales-forecasting.module';
+import { LoyaltyModule } from './modules/loyalty/loyalty.module';
 
 @Module({
   imports: [
@@ -58,6 +60,8 @@ import { AiIntelligenceModule } from './modules/ai-intelligence/ai-intelligence.
     UsersModule,
     DashboardModule,
     AiIntelligenceModule,
+    SalesForecastingModule,
+    LoyaltyModule,
     HealthModule,
   ],
 })

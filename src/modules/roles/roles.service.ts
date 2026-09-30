@@ -71,8 +71,13 @@ export class RolesService {
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem && dto.name && dto.name !== role.name)
       throw new ConflictException('System role names cannot be changed.');
-    if (role.isSystem && dto.permissionIds)
-      throw new ConflictException('System role permissions cannot be changed.');
+    // SUPER_ADMIN must always retain full access. Other built-in roles (for
+    // example CASHIER and MANAGER) are templates whose feature access is
+    // intentionally configurable by an administrator.
+    if (role.name === 'SUPER_ADMIN' && dto.permissionIds)
+      throw new ConflictException(
+        'SUPER_ADMIN permissions cannot be changed.',
+      );
     if (dto.permissionIds) await this.validatePermissions(dto.permissionIds);
     await this.prisma.$transaction(async (tx) => {
       await tx.role.update({

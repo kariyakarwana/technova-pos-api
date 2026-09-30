@@ -5,6 +5,7 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -57,6 +58,11 @@ export class CreateSaleDto {
   @ValidateNested({ each: true })
   @Type(() => SalePaymentDto)
   payments!: SalePaymentDto[];
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  loyaltyPointsToRedeem?: number;
   @IsOptional()
   @ValidateNested()
   @Type(() => CreditTermsDto)

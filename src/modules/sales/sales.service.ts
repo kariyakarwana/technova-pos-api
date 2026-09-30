@@ -149,7 +149,7 @@ export class SalesService {
     });
     if (!branch)
       throw new NotFoundException('Active assigned branch not found.');
-    const [products, customers] = await Promise.all([
+    const [products, customers, loyaltyRule] = await Promise.all([
       this.prisma.product.findMany({
         where: { organizationId, status: RecordStatus.ACTIVE },
         orderBy: { name: 'asc' },
@@ -195,10 +195,28 @@ export class SalesService {
           },
         },
       }),
+      this.prisma.loyaltyRule.findFirst({
+        where: { organizationId, status: RecordStatus.ACTIVE },
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          id: true,
+          name: true,
+          spendAmount: true,
+          pointsAwarded: true,
+          redemptionValuePerPoint: true,
+        },
+      }),
     ]);
     return {
       branch,
       products,
+      loyaltyRule: loyaltyRule ?? {
+        id: 'STANDARD',
+        name: 'Standard loyalty rule',
+        spendAmount: 1000,
+        pointsAwarded: 50,
+        redemptionValuePerPoint: 1,
+      },
       customers: customers.map(({ creditAgreements, ...customer }) => ({
         ...customer,
         currentBalance: creditAgreements.reduce(
@@ -265,6 +283,27 @@ export class SalesService {
       : null;
     if (dto.customerId && !customer)
       throw new NotFoundException('Customer not found.');
+    const requestedLoyaltyPoints = dto.loyaltyPointsToRedeem ?? 0;
+    if (requestedLoyaltyPoints > 0 && !customer)
+      throw new BadRequestException(
+        'Loyalty point redemption requires a registered customer.',
+      );
+    const loyaltyRule = await this.prisma.loyaltyRule.findFirst({
+      where: { organizationId, status: RecordStatus.ACTIVE },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const redemptionValuePerPoint = Number(
+      loyaltyRule?.redemptionValuePerPoint ?? 1,
+    );
+    if (requestedLoyaltyPoints > 0) {
+      const loyaltyAccount = await this.prisma.loyaltyAccount.findUnique({
+        where: { customerId: customer!.id },
+      });
+      if (!loyaltyAccount || loyaltyAccount.points < requestedLoyaltyPoints)
+        throw new ConflictException(
+          'The customer has insufficient loyalty points.',
+        );
+    }
     const storeCreditPayment = dto.payments
       .filter((payment) => payment.method === PaymentMethod.STORE_CREDIT)
       .reduce((sum, payment) => sum + payment.amount, 0);
@@ -348,14 +387,26 @@ export class SalesService {
       ),
       discountTotal = prepared.reduce((s, i) => s + i.discount, 0),
       taxTotal = prepared.reduce((s, i) => s + i.tax, 0),
-      total = subtotal - discountTotal + taxTotal;
+      total = subtotal - discountTotal + taxTotal,
+      loyaltyRedemptionValue = Math.min(
+        total,
+        requestedLoyaltyPoints * redemptionValuePerPoint,
+      ),
+      payableTotal = total - loyaltyRedemptionValue;
+    if (
+      requestedLoyaltyPoints > 0 &&
+      requestedLoyaltyPoints * redemptionValuePerPoint > total + 0.01
+    )
+      throw new BadRequestException(
+        'Loyalty point redemption cannot exceed the sale total.',
+      );
     const paid = dto.payments.reduce((s, p) => s + p.amount, 0);
-    const balanceDue = total - paid;
+    const balanceDue = payableTotal - paid;
     if (!dto.credit && Math.abs(balanceDue) > 0.01)
       throw new BadRequestException('Payment total must equal the sale total.');
     if (dto.credit && balanceDue <= 0)
       throw new BadRequestException('A credit sale must have a balance due.');
-    if (paid > total + 0.01)
+    if (paid > payableTotal + 0.01)
       throw new BadRequestException(
         'Payment total cannot exceed the sale total.',
       );
@@ -416,6 +467,8 @@ export class SalesService {
           total,
           paidTotal: paid,
           balanceDue,
+          loyaltyPointsRedeemed: requestedLoyaltyPoints,
+          loyaltyRedemptionValue,
           completedAt: now,
         },
       });
@@ -578,18 +631,46 @@ export class SalesService {
         creditAgreementId = agreement.id;
       }
       if (dto.customerId) {
-        const points = Math.floor(total / 100);
-        if (points > 0) {
-          const account = await tx.loyaltyAccount.upsert({
-            where: { customerId: dto.customerId },
-            create: { customerId: dto.customerId, points },
-            update: { points: { increment: points } },
+        const account = await tx.loyaltyAccount.upsert({
+          where: { customerId: dto.customerId },
+          create: { customerId: dto.customerId, points: 0 },
+          update: {},
+        });
+        if (requestedLoyaltyPoints > 0) {
+          const redeemed = await tx.loyaltyAccount.updateMany({
+            where: { id: account.id, points: { gte: requestedLoyaltyPoints } },
+            data: { points: { decrement: requestedLoyaltyPoints } },
+          });
+          if (!redeemed.count)
+            throw new ConflictException(
+              'The customer no longer has enough loyalty points.',
+            );
+          await tx.loyaltyTransaction.create({
+            data: {
+              loyaltyAccountId: account.id,
+              points: -requestedLoyaltyPoints,
+              reason: 'SALE_REDEMPTION',
+              referenceType: 'SALE',
+              referenceId: sale.id,
+            },
+          });
+        }
+        const spendAmount = Number(loyaltyRule?.spendAmount ?? 1000);
+        const pointsAwarded = loyaltyRule?.pointsAwarded ?? 50;
+        const earnedPoints =
+          spendAmount > 0
+            ? Math.floor(payableTotal / spendAmount) * pointsAwarded
+            : 0;
+        if (earnedPoints > 0) {
+          await tx.loyaltyAccount.update({
+            where: { id: account.id },
+            data: { points: { increment: earnedPoints } },
           });
           await tx.loyaltyTransaction.create({
             data: {
               loyaltyAccountId: account.id,
-              points,
-              reason: 'SALE',
+              points: earnedPoints,
+              reason: `SALE_EARNED:${loyaltyRule?.id ?? 'STANDARD'}`,
               referenceType: 'SALE',
               referenceId: sale.id,
             },
@@ -614,6 +695,9 @@ export class SalesService {
         discountTotal,
         taxTotal,
         total,
+        loyaltyPointsRedeemed: requestedLoyaltyPoints,
+        loyaltyRedemptionValue,
+        amountDueAfterLoyalty: payableTotal,
         balanceDue,
         creditAgreementId,
         payments: dto.payments.map((payment) => ({

@@ -522,7 +522,104 @@ export class AuthService {
       throw new UnauthorizedException(
         'This Google account is not provisioned for TechNova POS.',
       );
-    await this.repository.linkGoogleAccount(user.id, profile.sub);
+    await this.repository.linkOAuthAccount(user.id, 'google', profile.sub);
+    const refreshToken = generateRawToken();
+    await this.repository.createRefreshSession({
+      userId: user.id,
+      tokenHash: hashToken(refreshToken),
+      familyId: generateRawToken(),
+      ipHash: context.ipHash,
+      userAgent: context.userAgent,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_LIFETIME_MS),
+    });
+    return this.buildLoginResult(user, refreshToken);
+  }
+
+  async microsoftAuthorizationUrl(): Promise<string> {
+    const state = await this.jwtService.signAsync(
+      { nonce: generateRawToken() },
+      {
+        secret: this.jwtSecret(),
+        expiresIn: 300,
+      },
+    );
+    const params = new URLSearchParams({
+      client_id: this.microsoftClientId(),
+      redirect_uri: this.microsoftCallbackUrl(),
+      response_type: 'code',
+      response_mode: 'query',
+      scope: 'openid profile email User.Read',
+      state,
+      prompt: 'select_account',
+    });
+    return `${this.microsoftAuthorityUrl()}/oauth2/v2.0/authorize?${params}`;
+  }
+
+  async microsoftCallback(
+    code: string,
+    state: string,
+    context: SecurityRequestContext,
+  ): Promise<LoginResult> {
+    try {
+      await this.jwtService.verifyAsync(state, { secret: this.jwtSecret() });
+    } catch {
+      throw new UnauthorizedException(
+        'The Microsoft sign-in request is invalid or expired.',
+      );
+    }
+
+    const tokenResponse = await fetch(
+      `${this.microsoftAuthorityUrl()}/oauth2/v2.0/token`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: this.microsoftClientId(),
+          client_secret: this.microsoftClientSecret(),
+          redirect_uri: this.microsoftCallbackUrl(),
+          grant_type: 'authorization_code',
+          scope: 'openid profile email User.Read',
+        }),
+      },
+    );
+    if (!tokenResponse.ok)
+      throw new UnauthorizedException('Microsoft authentication failed.');
+
+    const tokens = (await tokenResponse.json()) as { access_token?: string };
+    if (!tokens.access_token)
+      throw new UnauthorizedException('Microsoft authentication failed.');
+
+    const profileResponse = await fetch(
+      'https://graph.microsoft.com/v1.0/me?$select=id,mail,userPrincipalName',
+      {
+        headers: { authorization: `Bearer ${tokens.access_token}` },
+      },
+    );
+    if (!profileResponse.ok)
+      throw new UnauthorizedException(
+        'Unable to read the Microsoft account profile.',
+      );
+    const profile = (await profileResponse.json()) as {
+      id?: string;
+      mail?: string | null;
+      userPrincipalName?: string | null;
+    };
+    const email = (profile.mail ?? profile.userPrincipalName)
+      ?.trim()
+      .toLowerCase();
+    if (!profile.id || !email)
+      throw new UnauthorizedException(
+        'The Microsoft account does not provide a usable email address.',
+      );
+
+    const user = await this.repository.findUserForLogin(email);
+    if (!user || user.status !== UserStatus.ACTIVE)
+      throw new UnauthorizedException(
+        'This Microsoft account is not provisioned for TechNova POS.',
+      );
+    await this.repository.linkOAuthAccount(user.id, 'microsoft', profile.id);
+
     const refreshToken = generateRawToken();
     await this.repository.createRefreshSession({
       userId: user.id,
@@ -666,6 +763,30 @@ export class AuthService {
       this.config.get<string>('AUTH_GOOGLE_CALLBACK_URL') ??
       this.config.getOrThrow<string>('GOOGLE_CALLBACK_URL')
     );
+  }
+
+  private microsoftClientId(): string {
+    return this.requiredOAuthSetting('MICROSOFT_CLIENT_ID');
+  }
+
+  private microsoftClientSecret(): string {
+    return this.requiredOAuthSetting('MICROSOFT_CLIENT_SECRET');
+  }
+
+  private microsoftCallbackUrl(): string {
+    return this.requiredOAuthSetting('MICROSOFT_CALLBACK_URL');
+  }
+
+  private microsoftAuthorityUrl(): string {
+    const tenantId =
+      this.config.get<string>('MICROSOFT_TENANT_ID')?.trim() || 'common';
+    return `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}`;
+  }
+
+  private requiredOAuthSetting(name: string): string {
+    const value = this.config.get<string>(name)?.trim();
+    if (!value) throw new Error(`${name} is not configured.`);
+    return value;
   }
 
   sessions(userId: string) {
