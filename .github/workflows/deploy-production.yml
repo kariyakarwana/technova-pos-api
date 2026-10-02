@@ -1,0 +1,107 @@
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      frontend_image:
+        description: Immutable frontend GHCR digest reference
+        required: true
+        type: string
+      backend_image:
+        description: Immutable backend GHCR digest reference
+        required: true
+        type: string
+      backend_migrate_image:
+        description: Immutable migration GHCR digest reference
+        required: true
+        type: string
+      ai_image:
+        description: Immutable AI GHCR digest reference
+        required: true
+        type: string
+
+concurrency:
+  group: technova-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_BASE_URL }}
+    env:
+      FRONTEND_IMAGE: ${{ inputs.frontend_image }}
+      BACKEND_IMAGE: ${{ inputs.backend_image }}
+      BACKEND_MIGRATE_IMAGE: ${{ inputs.backend_migrate_image }}
+      AI_IMAGE: ${{ inputs.ai_image }}
+      VPS_HOST: ${{ vars.VPS_HOST }}
+      VPS_USER: ${{ vars.VPS_USER }}
+    steps:
+      - name: Validate immutable image references
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A expected=(
+            [FRONTEND_IMAGE]='^ghcr\.io/kariyakarwana/technova-pos@sha256:[0-9a-f]{64}$'
+            [BACKEND_IMAGE]='^ghcr\.io/kariyakarwana/technova-pos-api@sha256:[0-9a-f]{64}$'
+            [BACKEND_MIGRATE_IMAGE]='^ghcr\.io/kariyakarwana/technova-pos-api-migrate@sha256:[0-9a-f]{64}$'
+            [AI_IMAGE]='^ghcr\.io/kariyakarwana/technova-pos-ai@sha256:[0-9a-f]{64}$'
+          )
+          for variable in FRONTEND_IMAGE BACKEND_IMAGE BACKEND_MIGRATE_IMAGE AI_IMAGE; do
+            value="${!variable}"
+            if [[ ! "$value" =~ ${expected[$variable]} ]]; then
+              echo "Invalid $variable reference: $value" >&2
+              exit 1
+            fi
+          done
+
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+          ping: ${{ vars.VPS_HOST }}
+
+      - name: Prepare SSH identity
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/technova_deploy"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/technova_deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy approved release
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf -v remote_command \
+            'sudo /usr/local/sbin/technova-deploy %q %q %q %q' \
+            "$FRONTEND_IMAGE" "$BACKEND_IMAGE" \
+            "$BACKEND_MIGRATE_IMAGE" "$AI_IMAGE"
+          ssh -i "$HOME/.ssh/technova_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "$VPS_USER@$VPS_HOST" "$remote_command"
+
+      - name: External HTTPS smoke tests
+        if: ${{ vars.PUBLIC_BASE_URL != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent \
+            --retry 12 --retry-delay 5 --retry-all-errors \
+            "${{ vars.PUBLIC_BASE_URL }}/nginx-health"
+          curl --fail --show-error --silent \
+            --retry 12 --retry-delay 5 --retry-all-errors \
+            "${{ vars.PUBLIC_BASE_URL }}/api/v1/health"

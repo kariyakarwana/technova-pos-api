@@ -1,0 +1,7 @@
+* @kariyakarwana
+/.github/ @kariyakarwana
+/Dockerfile @kariyakarwana
+/docker-compose*.yml @kariyakarwana
+/deploy/ @kariyakarwana
+/prisma/migrations/ @kariyakarwana
+

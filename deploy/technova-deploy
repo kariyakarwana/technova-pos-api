@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ "$#" -ne 4 ]]; then
+  echo "Usage: technova-deploy FRONTEND BACKEND MIGRATE AI" >&2
+  exit 64
+fi
+
+readonly FRONTEND_IMAGE="$1"
+readonly BACKEND_IMAGE="$2"
+readonly BACKEND_MIGRATE_IMAGE="$3"
+readonly AI_IMAGE="$4"
+readonly DEPLOY_DIR=/opt/technova/deploy
+readonly COMPOSE_FILE="$DEPLOY_DIR/compose.production.yml"
+readonly SECRET_ENV=/etc/technova/production.env
+readonly RELEASE_ENV="$DEPLOY_DIR/release.env"
+readonly PREVIOUS_ENV="$DEPLOY_DIR/release.previous.env"
+readonly BACKUP_DIR=/var/backups/technova/postgres
+
+validate_image() {
+  local value="$1"
+  local pattern="$2"
+  if [[ ! "$value" =~ $pattern ]]; then
+    echo "Rejected invalid image reference: $value" >&2
+    exit 65
+  fi
+}
+
+validate_image "$FRONTEND_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos@sha256:[0-9a-f]{64}$'
+validate_image "$BACKEND_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos-api@sha256:[0-9a-f]{64}$'
+validate_image "$BACKEND_MIGRATE_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos-api-migrate@sha256:[0-9a-f]{64}$'
+validate_image "$AI_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos-ai@sha256:[0-9a-f]{64}$'
+
+exec 9>/run/lock/technova-deploy.lock
+if ! flock -n 9; then
+  echo "Another deployment is already running" >&2
+  exit 75
+fi
+
+test -r "$SECRET_ENV"
+test -r "$COMPOSE_FILE"
+install -d -o root -g root -m 0700 "$BACKUP_DIR"
+
+candidate="$(mktemp "$DEPLOY_DIR/release.candidate.XXXXXX")"
+trap 'rm -f "$candidate"' EXIT
+
+cat > "$candidate" <<EOF
+FRONTEND_IMAGE=$FRONTEND_IMAGE
+BACKEND_IMAGE=$BACKEND_IMAGE
+BACKEND_MIGRATE_IMAGE=$BACKEND_MIGRATE_IMAGE
+AI_IMAGE=$AI_IMAGE
+EOF
+chmod 0600 "$candidate"
+
+compose_candidate=(
+  docker compose
+  --project-name technova-pos-production
+  --env-file "$SECRET_ENV"
+  --env-file "$candidate"
+  -f "$COMPOSE_FILE"
+)
+
+"${compose_candidate[@]}" config --quiet
+"${compose_candidate[@]}" pull
+"${compose_candidate[@]}" up -d --wait postgres
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+if [[ -f "$RELEASE_ENV" ]]; then
+  cp --preserve=mode,ownership,timestamps "$RELEASE_ENV" "$PREVIOUS_ENV"
+  postgres_user="$("${compose_candidate[@]}" exec -T postgres printenv POSTGRES_USER)"
+  postgres_db="$("${compose_candidate[@]}" exec -T postgres printenv POSTGRES_DB)"
+  "${compose_candidate[@]}" exec -T postgres \
+    pg_dump -U "$postgres_user" -d "$postgres_db" -Fc \
+    > "$BACKUP_DIR/pre-deploy-$timestamp.dump"
+fi
+
+"${compose_candidate[@]}" run --rm migrate
+install -o root -g root -m 0600 "$candidate" "$RELEASE_ENV"
+
+compose_current=(
+  docker compose
+  --project-name technova-pos-production
+  --env-file "$SECRET_ENV"
+  --env-file "$RELEASE_ENV"
+  -f "$COMPOSE_FILE"
+)
+
+"${compose_current[@]}" up -d --remove-orphans
+
+healthy=false
+for _attempt in $(seq 1 36); do
+  if curl --fail --silent http://127.0.0.1:4000/api/v1/health >/dev/null \
+     && curl --fail --silent http://127.0.0.1:3000/login >/dev/null; then
+    healthy=true
+    break
+  fi
+  sleep 5
+done
+
+if [[ "$healthy" != true ]]; then
+  echo "New release failed health checks" >&2
+  "${compose_current[@]}" ps >&2 || true
+  "${compose_current[@]}" logs --tail=100 backend frontend ai-service >&2 || true
+
+  if [[ -f "$PREVIOUS_ENV" ]]; then
+    install -o root -g root -m 0600 "$PREVIOUS_ENV" "$RELEASE_ENV"
+    compose_previous=(
+      docker compose
+      --project-name technova-pos-production
+      --env-file "$SECRET_ENV"
+      --env-file "$RELEASE_ENV"
+      -f "$COMPOSE_FILE"
+    )
+    "${compose_previous[@]}" pull
+    "${compose_previous[@]}" up -d --remove-orphans
+    echo "Previous application images restored" >&2
+  fi
+
+  echo "Database migrations were not reversed" >&2
+  exit 1
+fi
+
+"${compose_current[@]}" ps
+docker image prune -f --filter 'until=168h' || true
+echo "Deployment completed successfully"
+
