@@ -55,7 +55,9 @@ install -o root -g root -m 0755 \
 
 cp -a "$AI_SOURCE_DIR/artifacts/." /srv/technova/ai/artifacts/
 cp -a "$AI_SOURCE_DIR/data/processed/." /srv/technova/ai/data/processed/
-chown -R root:root /srv/technova/ai
+# The AI image runs as UID/GID 10001. Keep host ownership with root while
+# granting that container group read/traverse access to the read-only mounts.
+chown -R root:10001 /srv/technova/ai
 find /srv/technova/ai -type d -exec chmod 0750 {} +
 find /srv/technova/ai -type f -exec chmod 0640 {} +
 
