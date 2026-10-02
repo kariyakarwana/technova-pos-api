@@ -88,4 +88,6 @@ Do not make the production VPS a permanent self-hosted GitHub runner.
 After the supervisor confirms the final hostname and inbound mapping for ports
 80 and 443, replace `__DOMAIN__` in the production template, install it as the
 active Nginx site, update production URLs and secure-cookie settings, rebuild the
-frontend image, and only then run Certbot.
+frontend image, and only then run Certbot. The private configuration observes
+rate limits in dry-run mode; the production template enforces them with HTTP 429
+responses.
