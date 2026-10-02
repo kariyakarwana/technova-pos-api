@@ -15,6 +15,17 @@ port-forward. PostgreSQL and the AI service never publish host ports.
 
 ## One-time server installation
 
+The repository includes an idempotent installer for the files already staged in
+the `devops` home directory. Review it, then run it interactively so `sudo` can
+request the administrator password:
+
+```bash
+cd /home/devops/technova-deploy-candidate
+sudo bash ./install-server.sh
+```
+
+The expanded manual steps are retained below for review and troubleshooting.
+
 Run these commands interactively as the existing `devops` administrator:
 
 ```bash
