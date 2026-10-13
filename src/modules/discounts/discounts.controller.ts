@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -54,5 +55,12 @@ export class DiscountsController {
     @Req() r: Request,
   ) {
     return this.discounts.update(u, id, d, getSecurityRequestContext(r));
+  }
+  @Delete(':id') @RequirePermissions('discounts:manage') remove(
+    @CurrentUser() u: AuthenticatedUser,
+    @Param('id') id: string,
+    @Req() r: Request,
+  ) {
+    return this.discounts.remove(u, id, getSecurityRequestContext(r));
   }
 }
