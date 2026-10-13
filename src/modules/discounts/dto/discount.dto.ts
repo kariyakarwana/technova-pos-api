@@ -36,9 +36,11 @@ export class CreateDiscountRuleDto {
   @IsOptional() @IsBoolean() notifyWhatsapp?: boolean;
 }
 export class UpdateDiscountRuleDto {
+  @IsOptional() @IsString() productId?: string | null;
   @IsOptional() @IsString() @Length(2, 40) code?: string;
   @IsOptional() @IsString() @Length(2, 120) name?: string;
   @IsOptional() @IsString() @MaxLength(1000) description?: string;
+  @IsOptional() @IsEnum(DiscountType) type?: DiscountType;
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 4 })
@@ -53,7 +55,7 @@ export class UpdateDiscountRuleDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 3 })
   @Min(1)
-  maximumQuantity?: number;
+  maximumQuantity?: number | null;
   @IsOptional() @IsDateString() startsAt?: string;
   @IsOptional() @IsDateString() endsAt?: string;
   @IsOptional() @Type(() => Number) @IsInt() priority?: number;

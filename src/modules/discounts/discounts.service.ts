@@ -249,34 +249,75 @@ export class DiscountsService {
       where: { id, organizationId: org },
     });
     if (!existing) throw new NotFoundException('Discount rule not found.');
-    this.validate(dto);
+    const changingConfiguration = Object.entries(dto).some(
+      ([key, value]) => key !== 'status' && value !== undefined,
+    );
+    const now = new Date();
+    if (
+      changingConfiguration &&
+      (!existing.startsAt || existing.startsAt <= now)
+    )
+      throw new ConflictException(
+        'A discount rule cannot be edited after it starts.',
+      );
+    if (
+      dto.productId &&
+      !(await this.prisma.product.findFirst({
+        where: { id: dto.productId, organizationId: org },
+      }))
+    )
+      throw new NotFoundException('Product not found.');
+    this.validate({
+      minimumQuantity: dto.minimumQuantity ?? Number(existing.minimumQuantity),
+      maximumQuantity:
+        dto.maximumQuantity === null
+          ? undefined
+          : (dto.maximumQuantity ??
+            (existing.maximumQuantity === null
+              ? undefined
+              : Number(existing.maximumQuantity))),
+      startsAt: dto.startsAt ?? existing.startsAt?.toISOString(),
+      endsAt: dto.endsAt ?? existing.endsAt?.toISOString(),
+    });
     const resetNotification =
       dto.startsAt !== undefined ||
       dto.notifyEmail !== undefined ||
       dto.notifyWhatsapp !== undefined;
     let value: DiscountRule;
     try {
-      value = await this.prisma.discountRule.update({
-        where: { id },
-        data: {
-          ...dto,
-          code: dto.code
-            ? await this.promotionCode(
-                org,
-                dto.name ?? existing.name,
-                dto.code,
-                id,
-              )
-            : undefined,
-          description:
-            dto.description === undefined
-              ? undefined
-              : dto.description.trim() || null,
-          startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
-          endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
-          promotionNotifiedAt: resetNotification ? null : undefined,
-        },
-      });
+      const data = {
+        ...dto,
+        code: dto.code
+          ? await this.promotionCode(
+              org,
+              dto.name ?? existing.name,
+              dto.code,
+              id,
+            )
+          : undefined,
+        description:
+          dto.description === undefined
+            ? undefined
+            : dto.description.trim() || null,
+        startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
+        endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
+        promotionNotifiedAt: resetNotification ? null : undefined,
+      };
+      if (changingConfiguration) {
+        const updated = await this.prisma.discountRule.updateMany({
+          where: { id, organizationId: org, startsAt: { gt: new Date() } },
+          data,
+        });
+        if (updated.count === 0)
+          throw new ConflictException(
+            'A discount rule cannot be edited after it starts.',
+          );
+        value = await this.prisma.discountRule.findUniqueOrThrow({
+          where: { id },
+        });
+      } else {
+        value = await this.prisma.discountRule.update({ where: { id }, data });
+      }
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -292,6 +333,37 @@ export class DiscountsService {
       metadata: { discountRuleId: id },
     });
     return value;
+  }
+  async remove(
+    actor: AuthenticatedUser,
+    id: string,
+    context: SecurityRequestContext,
+  ) {
+    const organizationId = await this.org(actor.id);
+    const existing = await this.prisma.discountRule.findFirst({
+      where: { id, organizationId },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException('Discount rule not found.');
+    const removed = await this.prisma.discountRule.deleteMany({
+      where: {
+        id,
+        organizationId,
+        startsAt: { gt: new Date() },
+        applications: { none: {} },
+      },
+    });
+    if (removed.count === 0)
+      throw new ConflictException(
+        'A discount rule cannot be deleted after it starts or has been used.',
+      );
+    await this.audit.record({
+      userId: actor.id,
+      action: 'DISCOUNT_RULE_DELETED',
+      context,
+      metadata: { discountRuleId: id },
+    });
+    return { deleted: true };
   }
   private validate(dto: {
     minimumQuantity?: number;
