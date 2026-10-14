@@ -24,6 +24,7 @@ import {
 } from '../../common/security/token';
 import type { SecurityRequestContext } from '../../common/security/request';
 import { normalizePhone } from '../../common/security/phone';
+import { verifyGoogleIdToken } from './google-id-token';
 import {
   AuthRepository,
   type CustomerLoginUser,
@@ -104,6 +105,84 @@ export class AuthService {
         loyaltyPoints: customer.loyaltyAccount?.points ?? 0,
       },
     };
+  }
+
+  async linkGoogleCustomer(userId: string, idToken: string) {
+    const identity = await this.verifyGoogleMobileIdToken(idToken);
+    const user = await this.repository.findCustomerUserById(userId);
+    if (!user || !this.isActiveCustomerOnlyUser(user))
+      throw new ForbiddenException('An active customer account is required.');
+    if (user.email.toLowerCase() !== identity.email)
+      throw new ForbiddenException(
+        'The Google email must match your customer account email.',
+      );
+    await this.repository.linkGoogleToCustomer(user.id, identity.sub);
+    return { linked: true };
+  }
+
+  async loginGoogleCustomer(idToken: string, context: SecurityRequestContext) {
+    const identity = await this.verifyGoogleMobileIdToken(idToken);
+    const user = await this.repository.findCustomerUserForGoogleSub(
+      identity.sub,
+    );
+    if (!user)
+      throw new UnauthorizedException(
+        'Google account is not linked to a customer. Sign in with your customer phone and password first.',
+      );
+    if (!this.isActiveCustomerOnlyUser(user))
+      throw new ForbiddenException('This customer account is not active.');
+    const customer = user.customerProfile;
+    if (!customer)
+      throw new ForbiddenException('This customer account is not active.');
+    const refreshToken = generateRawToken();
+    await this.repository.createRefreshSession({
+      userId: user.id,
+      tokenHash: hashToken(refreshToken),
+      familyId: generateRawToken(),
+      ipHash: context.ipHash,
+      userAgent: context.userAgent,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_LIFETIME_MS),
+    });
+    const session = await this.buildLoginResult(user, refreshToken);
+    await this.repository.recordSuccessfulLogin(user.id);
+    return {
+      data: {
+        user: {
+          id: user.id,
+          firstName: customer.firstName,
+          lastName: customer.lastName,
+          email: user.email,
+          phone: user.phone,
+          customerNumber: customer.customerNumber,
+          mustChangePassword: user.mustChangePassword,
+        },
+        tokens: {
+          accessToken: session.accessToken,
+          refreshToken: session.refreshToken,
+          expiresIn: session.expiresIn,
+        },
+      },
+    };
+  }
+
+  private isActiveCustomerOnlyUser(user: CustomerLoginUser): boolean {
+    return (
+      user.status === UserStatus.ACTIVE &&
+      user.customerProfile?.status === RecordStatus.ACTIVE &&
+      user.roles.length > 0 &&
+      user.roles.every(({ role }) => role.name === 'CUSTOMER')
+    );
+  }
+
+  private async verifyGoogleMobileIdToken(idToken: string) {
+    const audience =
+      this.config.get<string>('GOOGLE_MOBILE_SERVER_CLIENT_ID') ||
+      this.googleClientId();
+    try {
+      return await verifyGoogleIdToken(idToken, audience);
+    } catch {
+      throw new UnauthorizedException('Invalid Google ID token.');
+    }
   }
 
   private async authenticateAndIssue(input: {

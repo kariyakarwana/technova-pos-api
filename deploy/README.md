@@ -6,7 +6,7 @@ port-forward. PostgreSQL and the AI service never publish host ports.
 
 ## Files
 
-- `compose.production.yml`: immutable application images plus PostgreSQL and MinIO.
+- `compose.production.yml`: immutable application images plus PostgreSQL and licensed MinIO AIStor Free.
 - `production.env.example`: required secret and runtime variable names.
 - `release.env.example`: the four immutable GHCR image references.
 - `technova-deploy`: locked deployment, migration, backup, health-check and rollback script.
@@ -45,6 +45,17 @@ sudo install -o root -g root -m 0755 technova-deploy /usr/local/sbin/technova-de
 
 Create `/etc/technova/production.env` from `production.env.example`, replacing
 every placeholder. Keep mode `0600` and never commit this file.
+
+The storage service also requires a valid AIStor Free license. Download the
+`minio.license` file from MinIO SUBNET and install it separately at
+`/etc/technova/minio.license` with owner `root:root` and mode `0600`. The Compose
+file mounts that file read-only at `/minio.license`; never add it to this
+repository, an image, a GitHub Actions variable, or `production.env`. The
+AIStor Free tier is for a single node and does not include high availability.
+
+If replacing only the installed Compose file on an already configured server,
+install that file directly to `/opt/technova/deploy/compose.production.yml`.
+Do not rerun `install-server.sh`, which also reinstalls the private Nginx site.
 
 ## Private pre-DNS Nginx
 

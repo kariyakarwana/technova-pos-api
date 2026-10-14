@@ -4,7 +4,13 @@ import type { PrismaService } from '../../database/prisma/prisma.service';
 import type { AuditService } from '../audit/audit.service';
 import { RolesService } from './roles.service';
 
-const actor = { id: 'admin-1' } as AuthenticatedUser;
+const actor = {
+  id: 'admin-1',
+  email: 'admin@example.com',
+  name: 'Admin',
+  roles: ['SUPER_ADMIN'],
+  permissions: [],
+} as AuthenticatedUser;
 const context = {} as SecurityRequestContext;
 
 describe('RolesService permission editing', () => {
@@ -21,9 +27,15 @@ describe('RolesService permission editing', () => {
       role: {
         findUnique: jest
           .fn()
-          .mockResolvedValue({ id: 'cashier', name: 'CASHIER', isSystem: true }),
+          .mockResolvedValue({
+            id: 'cashier',
+            name: 'CASHIER',
+            isSystem: true,
+          }),
       },
-      permission: { count: jest.fn().mockResolvedValue(1) },
+      permission: {
+        count: jest.fn().mockResolvedValue(1),
+      },
       $transaction: jest
         .fn()
         .mockImplementation(
@@ -74,5 +86,63 @@ describe('RolesService permission editing', () => {
         context,
       ),
     ).rejects.toThrow('SUPER_ADMIN permissions cannot be changed.');
+  });
+
+  it('blocks a role manager from creating a global role', async () => {
+    const prisma = {
+      permission: {
+        count: jest.fn().mockResolvedValue(1),
+      },
+      role: { create: jest.fn() },
+    };
+    const service = new RolesService(
+      prisma as unknown as PrismaService,
+      { record: jest.fn() } as unknown as AuditService,
+    );
+
+    await expect(
+      service.create(
+        {
+          id: 'manager',
+          roles: ['MANAGER'],
+          permissions: ['roles:manage', 'users:manage'],
+        } as AuthenticatedUser,
+        { name: 'NEW_ADMIN', permissionIds: ['users-manage-id'] },
+        context,
+      ),
+    ).rejects.toThrow('Only a super administrator can manage global roles.');
+    expect(prisma.role.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks a role manager from modifying any global role', async () => {
+    const prisma = {
+      role: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'admin-role',
+          name: 'ADMIN',
+          isSystem: false,
+          permissions: [{ permission: { key: 'users:manage' } }],
+        }),
+      },
+      $transaction: jest.fn(),
+    };
+    const service = new RolesService(
+      prisma as unknown as PrismaService,
+      { record: jest.fn() } as unknown as AuditService,
+    );
+
+    await expect(
+      service.update(
+        {
+          id: 'manager',
+          roles: ['MANAGER'],
+          permissions: ['roles:manage'],
+        } as AuthenticatedUser,
+        'admin-role',
+        { description: 'Changed' },
+        context,
+      ),
+    ).rejects.toThrow('Only a super administrator can manage global roles.');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });

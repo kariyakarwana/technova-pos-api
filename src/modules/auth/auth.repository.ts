@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { AuditOutcome, Prisma, TokenPurpose } from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma/prisma.service';
@@ -46,6 +46,71 @@ export class AuthRepository {
       where: { phone },
       include: customerLoginUserInclude,
     });
+  }
+
+  findCustomerUserById(id: string): Promise<CustomerLoginUser | null> {
+    return this.prisma.user.findUnique({
+      where: { id },
+      include: customerLoginUserInclude,
+    });
+  }
+
+  async findCustomerUserForGoogleSub(
+    providerAccountId: string,
+  ): Promise<CustomerLoginUser | null> {
+    const account = await this.prisma.account.findUnique({
+      where: {
+        provider_providerAccountId: {
+          provider: 'google_customer_mobile',
+          providerAccountId,
+        },
+      },
+      include: { user: { include: customerLoginUserInclude } },
+    });
+    return account?.user ?? null;
+  }
+
+  async linkGoogleToCustomer(userId: string, providerAccountId: string) {
+    const existingProviderAccount = await this.prisma.account.findUnique({
+      where: {
+        provider_providerAccountId: {
+          provider: 'google_customer_mobile',
+          providerAccountId,
+        },
+      },
+    });
+    if (existingProviderAccount && existingProviderAccount.userId !== userId)
+      throw new ConflictException(
+        'This Google account is already linked to another user.',
+      );
+    const existingCustomerLink = await this.prisma.account.findFirst({
+      where: { userId, provider: 'google_customer_mobile' },
+    });
+    if (
+      existingCustomerLink &&
+      existingCustomerLink.providerAccountId !== providerAccountId
+    )
+      throw new ConflictException(
+        'This customer is linked to a different Google account.',
+      );
+    if (existingProviderAccount) return;
+    try {
+      await this.prisma.account.create({
+        data: {
+          userId,
+          type: 'oauth',
+          provider: 'google_customer_mobile',
+          providerAccountId,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      )
+        throw new ConflictException('This Google account is already linked.');
+      throw error;
+    }
   }
 
   findCustomerProfileByUserId(userId: string) {

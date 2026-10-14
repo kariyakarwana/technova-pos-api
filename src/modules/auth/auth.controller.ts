@@ -19,6 +19,7 @@ import { AuthService } from './auth.service';
 import {
   CustomerLoginDto,
   CustomerRefreshDto,
+  GoogleMobileTokenDto,
   LoginDto,
 } from './dto/login.dto';
 import {
@@ -232,6 +233,28 @@ export class AuthController {
       password: dto.password,
       context: getSecurityRequestContext(request),
     });
+  }
+
+  @Post('customer/google/link')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  linkGoogleCustomer(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: GoogleMobileTokenDto,
+  ) {
+    return this.authService.linkGoogleCustomer(user.id, dto.idToken);
+  }
+
+  @Post('google/mobile')
+  @HttpCode(HttpStatus.OK)
+  loginGoogleCustomer(
+    @Body() dto: GoogleMobileTokenDto,
+    @Req() request: Request,
+  ) {
+    return this.authService.loginGoogleCustomer(
+      dto.idToken,
+      getSecurityRequestContext(request),
+    );
   }
 
   @Post('customer/refresh')

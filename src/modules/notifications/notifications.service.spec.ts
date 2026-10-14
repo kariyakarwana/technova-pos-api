@@ -1,9 +1,39 @@
 import { ConfigService } from '@nestjs/config';
-import { NotificationChannel } from '@prisma/client';
+import { NotificationChannel, PurchaseOrderStatus, SupplierShipmentStatus } from '@prisma/client';
 import type { PrismaService } from '../../database/prisma/prisma.service';
 import { NotificationsService } from './notifications.service';
 
 describe('NotificationsService', () => {
+  it('reconciles completed supplier and staff order alerts without clearing unfinished orders', async () => {
+    const appNotification = {
+      findMany: jest.fn()
+        .mockResolvedValueOnce([
+          { id: 'supplier-done', eventType: 'PURCHASE_ORDER_ISSUED_TO_SUPPLIER', actionUrl: '/supplier-dashboard/orders/order-1' },
+          { id: 'supplier-pending', eventType: 'PURCHASE_ORDER_ISSUED_TO_SUPPLIER', actionUrl: '/supplier-dashboard/orders/order-2' },
+          { id: 'staff-done', eventType: 'SUPPLIER_INVOICE_UPLOADED', actionUrl: '/purchases/order-1' },
+        ])
+        .mockResolvedValueOnce([]),
+      updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      count: jest.fn().mockResolvedValue(0),
+    };
+    const prisma = {
+      appNotification,
+      purchaseOrder: { findMany: jest.fn().mockResolvedValue([
+        { id: 'order-1', status: PurchaseOrderStatus.RECEIVED, supplierInvoices: [{ id: 'invoice-1' }], supplierShipments: [{ status: SupplierShipmentStatus.DELIVERED }], supplierResponses: [] },
+        { id: 'order-2', status: PurchaseOrderStatus.APPROVED, supplierInvoices: [], supplierShipments: [{ status: SupplierShipmentStatus.DISPATCHED }], supplierResponses: [] },
+      ]) },
+      $transaction: jest.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
+    };
+    const service = new NotificationsService(prisma as unknown as PrismaService, {} as ConfigService);
+
+    await service.appNotifications('user-1', { page: 1, pageSize: 100, skip: 0, unread: 'true' } as never);
+
+    expect(appNotification.updateMany).toHaveBeenCalledWith({
+      where: { recipientUserId: 'user-1', id: { in: ['supplier-done', 'staff-done'] }, readAt: null },
+      data: { readAt: expect.any(Date) },
+    });
+  });
+
   it('provides guided customer templates with company variables', () => {
     const service = new NotificationsService(
       {} as PrismaService,
