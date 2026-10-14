@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -9,6 +10,10 @@ import { Prisma, UserStatus } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
+import {
+  ADMIN_PERMISSION_KEYS,
+  isSuperAdmin,
+} from '../../common/auth/privileged-access';
 import { paginate } from '../../common/dto/pagination.dto';
 import { hashPassword } from '../../common/security/password';
 import type { SecurityRequestContext } from '../../common/security/request';
@@ -16,7 +21,11 @@ import { PrismaService } from '../../database/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { CreateUserDto, UpdateUserAccessDto, UserQueryDto } from './dto/user.dto';
+import {
+  CreateUserDto,
+  UpdateUserAccessDto,
+  UserQueryDto,
+} from './dto/user.dto';
 
 @Injectable()
 export class UsersService {
@@ -95,7 +104,12 @@ export class UsersService {
       select: { name: true },
     });
     if (!organization) throw new NotFoundException('Organization not found.');
-    await this.validateAssignments(organizationId, dto.roleIds, dto.branchIds);
+    await this.validateAssignments(
+      actor,
+      organizationId,
+      dto.roleIds,
+      dto.branchIds,
+    );
     const temporaryPassword = `Tn1!${randomBytes(12).toString('base64url')}`;
     let user: {
       id: string;
@@ -123,7 +137,13 @@ export class UsersService {
             })),
           },
         },
-        select: { id: true, email: true, name: true, phone: true, status: true },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          phone: true,
+          status: true,
+        },
       });
     } catch (error) {
       if (
@@ -185,12 +205,18 @@ export class UsersService {
       },
     });
     if (!target) throw new NotFoundException('User not found.');
-    if (targetUserId === actor.id && dto.status && dto.status !== UserStatus.ACTIVE)
+    await this.assertCanManageTarget(actor, targetUserId);
+    if (
+      targetUserId === actor.id &&
+      dto.status &&
+      dto.status !== UserStatus.ACTIVE
+    )
       throw new ConflictException('You cannot deactivate your own account.');
     if (dto.status && dto.status !== UserStatus.ACTIVE)
       await this.assertNotLastSuperAdmin(organizationId, targetUserId);
     if (dto.roleIds || dto.branchIds)
       await this.validateAssignments(
+        actor,
         organizationId,
         dto.roleIds ?? [],
         dto.branchIds ?? [],
@@ -255,6 +281,7 @@ export class UsersService {
       select: { id: true, email: true },
     });
     if (!target) throw new NotFoundException('User not found.');
+    await this.assertCanManageTarget(actor, targetUserId);
     await this.assertNotLastSuperAdmin(organizationId, targetUserId);
     try {
       await this.prisma.user.delete({ where: { id: targetUserId } });
@@ -303,19 +330,65 @@ export class UsersService {
   }
 
   private async validateAssignments(
+    actor: AuthenticatedUser,
     organizationId: string,
     roleIds: string[],
     branchIds: string[],
   ) {
-    const [roleCount, branchCount] = await Promise.all([
-      this.prisma.role.count({ where: { id: { in: roleIds } } }),
+    const [roles, branchCount] = await Promise.all([
+      this.prisma.role.findMany({
+        where: { id: { in: roleIds } },
+        select: {
+          id: true,
+          name: true,
+          permissions: { select: { permission: { select: { key: true } } } },
+        },
+      }),
       this.prisma.branch.count({
         where: { id: { in: branchIds }, organizationId },
       }),
     ]);
-    if (roleCount !== roleIds.length || branchCount !== branchIds.length)
+    if (roles.length !== roleIds.length || branchCount !== branchIds.length)
       throw new ConflictException(
         'One or more role or branch assignments are invalid.',
+      );
+    if (!isSuperAdmin(actor) && branchIds.length) {
+      const assignedBranchCount = await this.prisma.userBranch.count({
+        where: { userId: actor.id, branchId: { in: branchIds } },
+      });
+      if (assignedBranchCount !== branchIds.length)
+        throw new ForbiddenException(
+          'You cannot assign a branch outside your own access.',
+        );
+    }
+    if (
+      !isSuperAdmin(actor) &&
+      roles.some(
+        (role) =>
+          role.name === 'SUPER_ADMIN' ||
+          role.permissions.some(
+            ({ permission }) =>
+              ADMIN_PERMISSION_KEYS.has(permission.key) ||
+              !actor.permissions.includes(permission.key),
+          ),
+      )
+    )
+      throw new ForbiddenException(
+        'You cannot assign an administrative or higher-privilege role.',
+      );
+  }
+
+  private async assertCanManageTarget(
+    actor: AuthenticatedUser,
+    targetUserId: string,
+  ) {
+    if (isSuperAdmin(actor)) return;
+    const superAdminRoleCount = await this.prisma.userRole.count({
+      where: { userId: targetUserId, role: { name: 'SUPER_ADMIN' } },
+    });
+    if (superAdminRoleCount)
+      throw new ForbiddenException(
+        'Only a super administrator can manage a super administrator.',
       );
   }
 }

@@ -16,6 +16,7 @@ import {
 } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
+import { isSuperAdmin } from '../../common/auth/privileged-access';
 import { paginate } from '../../common/dto/pagination.dto';
 import type { SecurityRequestContext } from '../../common/security/request';
 import { PrismaService } from '../../database/prisma/prisma.service';
@@ -137,7 +138,7 @@ export class SalesService {
   async posContext(actor: AuthenticatedUser, branchId: string) {
     if (!branchId) throw new BadRequestException('branchId is required.');
     const organizationId = await this.org(actor.id);
-    const canViewAllBranches = actor.permissions.includes('branches:view');
+    const canViewAllBranches = isSuperAdmin(actor);
     const branch = await this.prisma.branch.findFirst({
       where: {
         id: branchId,
@@ -269,9 +270,15 @@ export class SalesService {
       );
     const organizationId = await this.org(actor.id);
     const branch = await this.prisma.branch.findFirst({
-      where: { id: dto.branchId, organizationId, status: RecordStatus.ACTIVE },
+      where: {
+        id: dto.branchId,
+        organizationId,
+        status: RecordStatus.ACTIVE,
+        users: isSuperAdmin(actor) ? undefined : { some: { userId: actor.id } },
+      },
     });
-    if (!branch) throw new NotFoundException('Branch not found.');
+    if (!branch)
+      throw new NotFoundException('Active assigned branch not found.');
     const customer = dto.customerId
       ? await this.prisma.customer.findFirst({
           where: {

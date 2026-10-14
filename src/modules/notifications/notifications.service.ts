@@ -9,7 +9,10 @@ import {
   NotificationChannel,
   OutboxStatus,
   Prisma,
+  PurchaseOrderStatus,
   RecordStatus,
+  SupplierResponseReviewStatus,
+  SupplierShipmentStatus,
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import nodemailer from 'nodemailer';
@@ -620,6 +623,7 @@ export class NotificationsService {
     };
   }
   async appNotifications(userId: string, q: AppNotificationQueryDto) {
+    await this.markHandledPurchaseOrderNotificationsRead(userId);
     const where: Prisma.AppNotificationWhereInput = {
       recipientUserId: userId,
       readAt: q.unread === 'true' ? null : undefined,
@@ -637,6 +641,62 @@ export class NotificationsService {
       }),
     ]);
     return { ...paginate(data, total, q), unread };
+  }
+
+  private async markHandledPurchaseOrderNotificationsRead(userId: string) {
+    // Reconcile alerts created before the action-based cleanup was introduced.
+    const notifications = await this.prisma.appNotification.findMany({
+      where: {
+        recipientUserId: userId,
+        readAt: null,
+        eventType: { in: [
+          'PURCHASE_ORDER_ISSUED_TO_SUPPLIER',
+          'SUPPLIER_RESPONSE_REVIEWED',
+          'SUPPLIER_ORDER_RESPONSE',
+          'SUPPLIER_ORDER_DISPATCHED',
+          'SUPPLIER_INVOICE_UPLOADED',
+        ] },
+      },
+      select: { id: true, eventType: true, actionUrl: true },
+    });
+    const candidates = notifications.flatMap((notification) => {
+      const match = /^\/(?:purchases|supplier-dashboard\/orders)\/([^/?#]+)$/.exec(notification.actionUrl ?? '');
+      return match ? [{ ...notification, orderId: match[1] }] : [];
+    });
+    if (!candidates.length) return;
+    const orders = await this.prisma.purchaseOrder.findMany({
+      where: { id: { in: [...new Set(candidates.map(({ orderId }) => orderId))] } },
+      select: {
+        id: true,
+        status: true,
+        supplierInvoices: { select: { id: true }, take: 1 },
+        supplierShipments: { select: { status: true } },
+        supplierResponses: { select: { reviewStatus: true } },
+      },
+    });
+    const byId = new Map(orders.map((order) => [order.id, order]));
+    const handledIds = candidates.filter(({ orderId, eventType }) => {
+      const order = byId.get(orderId);
+      if (!order) return false;
+      const dispatched = order.supplierShipments.some(({ status }) =>
+        status === SupplierShipmentStatus.DISPATCHED || status === SupplierShipmentStatus.DELIVERED,
+      );
+      if (eventType === 'PURCHASE_ORDER_ISSUED_TO_SUPPLIER')
+        return dispatched && order.supplierInvoices.length > 0;
+      if (eventType === 'SUPPLIER_RESPONSE_REVIEWED') return dispatched;
+      if (eventType === 'SUPPLIER_ORDER_RESPONSE')
+        return order.status === PurchaseOrderStatus.RECEIVED ||
+          order.supplierResponses.some(({ reviewStatus }) =>
+            reviewStatus === SupplierResponseReviewStatus.APPROVED || reviewStatus === SupplierResponseReviewStatus.REJECTED,
+          );
+      return order.status === PurchaseOrderStatus.RECEIVED;
+    }).map(({ id }) => id);
+    if (handledIds.length) {
+      await this.prisma.appNotification.updateMany({
+        where: { recipientUserId: userId, id: { in: handledIds }, readAt: null },
+        data: { readAt: new Date() },
+      });
+    }
   }
   async readAppNotification(userId: string, id: string) {
     const result = await this.prisma.appNotification.updateMany({

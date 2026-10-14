@@ -261,6 +261,17 @@ export class PurchasingService {
       po.status !== PurchaseOrderStatus.PARTIALLY_RECEIVED
     )
       throw new ConflictException('Purchase order is not ready to receive.');
+    const selectedInvoice = dto.supplierInvoiceId
+      ? po.supplierInvoices.find(
+          (invoice) => invoice.id === dto.supplierInvoiceId,
+        )
+      : undefined;
+    if (dto.supplierInvoiceId && !selectedInvoice)
+      throw new BadRequestException(
+        'Supplier invoice does not belong to this purchase order.',
+      );
+    const supplierInvoiceNumber =
+      selectedInvoice?.invoiceNumber ?? dto.supplierInvoiceNumber?.trim();
     const orderItems = new Map(po.items.map((i) => [i.id, i]));
     const seen = new Set<string>();
     const prepared = dto.items.map((input) => {
@@ -323,7 +334,7 @@ export class PurchasingService {
             branchId: po.branchId,
             purchaseOrderId: po.id,
             receiptNumber: dto.receiptNumber.trim().toUpperCase(),
-            supplierInvoiceNumber: dto.supplierInvoiceNumber,
+            supplierInvoiceNumber: supplierInvoiceNumber || undefined,
             notes: dto.notes,
           },
         });
@@ -409,6 +420,22 @@ export class PurchasingService {
               status: SupplierShipmentStatus.DELIVERED,
               deliveredAt: new Date(),
             },
+          });
+          await tx.appNotification.updateMany({
+            where: {
+              organizationId: po.branch.organizationId,
+              supplierId: po.supplierId,
+              actionUrl: `/purchases/${po.id}`,
+              eventType: {
+                in: [
+                  'SUPPLIER_ORDER_RESPONSE',
+                  'SUPPLIER_ORDER_DISPATCHED',
+                  'SUPPLIER_INVOICE_UPLOADED',
+                ],
+              },
+              readAt: null,
+            },
+            data: { readAt: new Date() },
           });
         }
         return {

@@ -66,6 +66,7 @@ export class ReceiptItemDto {
 }
 export class ReceivePurchaseOrderDto {
   @IsString() receiptNumber!: string;
+  @IsOptional() @IsString() supplierInvoiceId?: string;
   @IsOptional() @IsString() supplierInvoiceNumber?: string;
   @IsOptional() @IsString() notes?: string;
   @IsArray()

@@ -37,3 +37,10 @@ export class CustomerRefreshDto {
   @MinLength(32)
   refreshToken!: string;
 }
+
+export class GoogleMobileTokenDto {
+  @IsString()
+  @MinLength(100)
+  @MaxLength(8192)
+  idToken!: string;
+}

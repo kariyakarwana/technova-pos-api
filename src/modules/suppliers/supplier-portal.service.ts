@@ -299,7 +299,7 @@ export class SupplierPortalService {
           },
         });
       }
-      return tx.supplierOrderResponse.update({
+      const reviewed = await tx.supplierOrderResponse.update({
         where: { id: responseId },
         data: {
           reviewStatus: dto.approved
@@ -312,6 +312,17 @@ export class SupplierPortalService {
             : response.notes,
         },
       });
+      await tx.appNotification.updateMany({
+        where: {
+          organizationId: response.purchaseOrder.supplier.organizationId,
+          supplierId: response.purchaseOrder.supplierId,
+          eventType: 'SUPPLIER_ORDER_RESPONSE',
+          actionUrl: `/purchases/${response.purchaseOrderId}`,
+          readAt: null,
+        },
+        data: { readAt: new Date() },
+      });
+      return reviewed;
     });
     await this.notifySupplier(
       response.purchaseOrder.supplier,
@@ -338,7 +349,10 @@ export class SupplierPortalService {
     const membership = await this.membership(actor.id);
     const order = await this.prisma.purchaseOrder.findFirst({
       where: { id: orderId, supplierId: membership.supplierId },
-      include: { supplierResponses: { orderBy: { respondedAt: 'desc' }, take: 1 } },
+      include: {
+        supplierResponses: { orderBy: { respondedAt: 'desc' }, take: 1 },
+        supplierInvoices: { select: { id: true }, take: 1 },
+      },
     });
     if (!order) throw new NotFoundException('Purchase order not found.');
     const response = order.supplierResponses[0];
@@ -363,6 +377,21 @@ export class SupplierPortalService {
         dispatchedAt: status === SupplierShipmentStatus.DISPATCHED ? new Date() : undefined,
       },
     });
+    if (status === SupplierShipmentStatus.DISPATCHED) {
+      await this.prisma.appNotification.updateMany({
+        where: {
+          supplierId: membership.supplierId,
+          actionUrl: `/supplier-dashboard/orders/${orderId}`,
+          eventType: {
+            in: order.supplierInvoices.length
+              ? ['PURCHASE_ORDER_ISSUED_TO_SUPPLIER', 'SUPPLIER_RESPONSE_REVIEWED']
+              : ['SUPPLIER_RESPONSE_REVIEWED'],
+          },
+          readAt: null,
+        },
+        data: { readAt: new Date() },
+      });
+    }
     await this.notifyInternal(
       membership.supplier.organizationId,
       membership.supplierId,
@@ -391,6 +420,11 @@ export class SupplierPortalService {
       where: { id: orderId, supplierId: membership.supplierId },
       include: {
         supplierResponses: { orderBy: { respondedAt: 'desc' }, take: 1 },
+        supplierShipments: {
+          where: { status: { in: [SupplierShipmentStatus.DISPATCHED, SupplierShipmentStatus.DELIVERED] } },
+          select: { id: true },
+          take: 1,
+        },
       },
     });
     if (!order) throw new NotFoundException('Purchase order not found.');
@@ -412,24 +446,38 @@ export class SupplierPortalService {
       });
       if (!validShipment) throw new BadRequestException('Shipment is invalid.');
     }
-    const invoice = await this.prisma.supplierInvoice.create({
-      data: {
-        purchaseOrderId: orderId,
-        shipmentId: dto.shipmentId,
-        invoiceNumber: dto.invoiceNumber.trim(),
-        fileName: dto.fileName,
-        mimeType: dto.mimeType,
-        fileSize: fileData.length,
-        fileData,
-      },
-      select: {
-        id: true,
-        invoiceNumber: true,
-        fileName: true,
-        mimeType: true,
-        fileSize: true,
-        uploadedAt: true,
-      },
+    const invoice = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.supplierInvoice.create({
+        data: {
+          purchaseOrderId: orderId,
+          shipmentId: dto.shipmentId,
+          invoiceNumber: dto.invoiceNumber.trim(),
+          fileName: dto.fileName,
+          mimeType: dto.mimeType,
+          fileSize: fileData.length,
+          fileData,
+        },
+        select: {
+          id: true,
+          invoiceNumber: true,
+          fileName: true,
+          mimeType: true,
+          fileSize: true,
+          uploadedAt: true,
+        },
+      });
+      if (order.supplierShipments.length) {
+        await tx.appNotification.updateMany({
+          where: {
+            supplierId: membership.supplierId,
+            eventType: 'PURCHASE_ORDER_ISSUED_TO_SUPPLIER',
+            actionUrl: `/supplier-dashboard/orders/${orderId}`,
+            readAt: null,
+          },
+          data: { readAt: new Date() },
+        });
+      }
+      return saved;
     });
     await this.notifyInternal(
       membership.supplier.organizationId,
