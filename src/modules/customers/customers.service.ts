@@ -1,10 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, RecordStatus, UserStatus } from '@prisma/client';
+import { isEmail } from 'class-validator';
 import { randomBytes } from 'node:crypto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { paginate } from '../../common/dto/pagination.dto';
@@ -206,6 +208,158 @@ export class CustomersService {
       temporaryPasswordSent:
         queuedChannels.includes('EMAIL') &&
         queuedChannels.includes('WHATSAPP'),
+      welcomeNotifications: {
+        emailQueued: queuedChannels.includes('EMAIL'),
+        whatsappQueued: queuedChannels.includes('WHATSAPP'),
+      },
+    };
+  }
+
+  async enableLogin(
+    actor: AuthenticatedUser,
+    id: string,
+    context: SecurityRequestContext,
+  ) {
+    const membership = await this.prisma.organizationUser.findFirst({
+      where: { userId: actor.id },
+      select: {
+        organizationId: true,
+        organization: { select: { name: true } },
+      },
+    });
+    if (!membership) throw new NotFoundException('Organization not found.');
+
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, organizationId: membership.organizationId },
+    });
+    if (!customer) throw new NotFoundException('Customer not found.');
+    if (customer.userId)
+      throw new ConflictException('This customer already has a login account.');
+    if (customer.status !== RecordStatus.ACTIVE)
+      throw new ConflictException('Activate this customer before enabling login.');
+
+    const email = customer.email?.trim().toLowerCase();
+    const phone = customer.phone ? normalizePhone(customer.phone) : undefined;
+    if (!email || !isEmail(email) || !phone || !/^\+[1-9]\d{7,14}$/.test(phone))
+      throw new BadRequestException(
+        'A valid email and international-format phone number are required before enabling login.',
+      );
+
+    const existingAccount = await this.prisma.user.findFirst({
+      where: { OR: [{ email }, { phone }] },
+      select: { email: true },
+    });
+    if (existingAccount)
+      throw new ConflictException(
+        existingAccount.email === email
+          ? 'An account already exists for this email address.'
+          : 'An account already exists for this phone number.',
+      );
+
+    const temporaryPassword = this.temporaryPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+    let customerUserId: string;
+    try {
+      customerUserId = await this.prisma.$transaction(async (transaction) => {
+        const permission = await transaction.permission.upsert({
+          where: { key: 'customer-app:access' },
+          update: { description: 'Access the customer mobile application' },
+          create: {
+            key: 'customer-app:access',
+            description: 'Access the customer mobile application',
+          },
+        });
+        const role = await transaction.role.upsert({
+          where: { name: 'CUSTOMER' },
+          update: {
+            description: 'Customer mobile application user',
+            isSystem: true,
+          },
+          create: {
+            name: 'CUSTOMER',
+            description: 'Customer mobile application user',
+            isSystem: true,
+          },
+        });
+        await transaction.rolePermission.upsert({
+          where: {
+            roleId_permissionId: {
+              roleId: role.id,
+              permissionId: permission.id,
+            },
+          },
+          update: {},
+          create: { roleId: role.id, permissionId: permission.id },
+        });
+        const user = await transaction.user.create({
+          data: {
+            email,
+            phone,
+            name: `${customer.firstName} ${customer.lastName ?? ''}`.trim(),
+            passwordHash,
+            emailVerified: new Date(),
+            status: UserStatus.ACTIVE,
+            mustChangePassword: true,
+            organizationMemberships: {
+              create: { organizationId: membership.organizationId },
+            },
+            roles: { create: { roleId: role.id } },
+          },
+        });
+        const linked = await transaction.customer.updateMany({
+          where: {
+            id,
+            organizationId: membership.organizationId,
+            userId: null,
+            status: RecordStatus.ACTIVE,
+          },
+          data: { userId: user.id },
+        });
+        if (linked.count !== 1)
+          throw new ConflictException('This customer can no longer be enabled for login.');
+        return user.id;
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
+        throw new ConflictException('An account already exists for this email or phone number.');
+      throw error;
+    }
+
+    await this.audit.record({
+      userId: actor.id,
+      action: 'CUSTOMER_LOGIN_ENABLED',
+      context,
+      metadata: { customerId: id, customerNumber: customer.customerNumber, customerUserId },
+    });
+
+    let queuedChannels: string[] = [];
+    try {
+      const welcome = await this.notifications.queueCustomerWelcome({
+        organizationId: membership.organizationId,
+        companyName: membership.organization.name,
+        customerId: id,
+        userId: customerUserId,
+        customerNumber: customer.customerNumber,
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        phone,
+        email,
+        temporaryPassword,
+      });
+      queuedChannels = welcome.queuedChannels;
+    } catch (error) {
+      this.logger.error(
+        `Customer ${id} login was enabled, but welcome notifications could not be queued.`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+
+    return {
+      customerId: id,
+      customerNumber: customer.customerNumber,
+      credentialsCreated: true,
+      temporaryPasswordSent:
+        queuedChannels.includes('EMAIL') && queuedChannels.includes('WHATSAPP'),
       welcomeNotifications: {
         emailQueued: queuedChannels.includes('EMAIL'),
         whatsappQueued: queuedChannels.includes('WHATSAPP'),
