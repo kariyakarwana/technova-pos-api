@@ -45,13 +45,6 @@ export class CustomersController {
   ) {
     return this.customers.create(u, d, getSecurityRequestContext(r));
   }
-  @Post(':id/enable-login') @RequirePermissions('customers:manage') enableLogin(
-    @CurrentUser() u: AuthenticatedUser,
-    @Param('id') id: string,
-    @Req() r: Request,
-  ) {
-    return this.customers.enableLogin(u, id, getSecurityRequestContext(r));
-  }
   @Patch(':id') @RequirePermissions('customers:manage') update(
     @CurrentUser() u: AuthenticatedUser,
     @Param('id') id: string,
