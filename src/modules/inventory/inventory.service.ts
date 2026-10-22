@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   InventoryUnitStatus,
+  Prisma,
   StockMovementType,
   TransferStatus,
 } from '@prisma/client';
@@ -195,6 +196,27 @@ export class InventoryService {
       })) !== ids.length
     )
       throw new BadRequestException('One or more products are invalid.');
+    const stockLevels = await this.prisma.stockLevel.findMany({
+      where: { branchId: dto.sourceBranchId, productId: { in: ids } },
+      select: { productId: true, quantityOnHand: true, quantityReserved: true },
+    });
+    const availableByProduct = new Map(
+      stockLevels.map((level) => [
+        level.productId,
+        level.quantityOnHand.sub(level.quantityReserved),
+      ]),
+    );
+    for (const item of dto.items) {
+      if (
+        new Prisma.Decimal(item.quantity).gt(
+          availableByProduct.get(item.productId) ?? 0,
+        )
+      ) {
+        throw new ConflictException(
+          'Transfer quantity cannot exceed available stock at the source branch.',
+        );
+      }
+    }
     const transfer = await this.prisma.stockTransfer.create({
       data: {
         transferNumber: `TR-${Date.now()}-${randomUUID().slice(0, 6).toUpperCase()}`,
