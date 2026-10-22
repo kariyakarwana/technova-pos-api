@@ -116,10 +116,18 @@ export class SuppliersService {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
-      )
+      ) {
+        const target = error.meta?.target;
+        const constraint = (Array.isArray(target)
+          ? target.join(' ')
+          : String(target ?? '')
+        ).toLowerCase();
         throw new ConflictException(
-          'The supplier code or portal email is already in use.',
+          constraint.includes('email')
+            ? 'This email address is already registered to an existing account.'
+            : 'The supplier could not be created. Refresh the form and try again.',
         );
+      }
       throw error;
     }
   }
