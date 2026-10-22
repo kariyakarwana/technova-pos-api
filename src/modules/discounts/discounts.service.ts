@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  DiscountType,
   type DiscountRule,
   Prisma,
   RecordStatus,
@@ -268,6 +269,8 @@ export class DiscountsService {
     )
       throw new NotFoundException('Product not found.');
     this.validate({
+      type: dto.type ?? existing.type,
+      value: dto.value ?? Number(existing.value),
       minimumQuantity: dto.minimumQuantity ?? Number(existing.minimumQuantity),
       maximumQuantity:
         dto.maximumQuantity === null
@@ -366,11 +369,15 @@ export class DiscountsService {
     return { deleted: true };
   }
   private validate(dto: {
+    type?: DiscountType;
+    value?: number;
     minimumQuantity?: number;
     maximumQuantity?: number;
     startsAt?: string;
     endsAt?: string;
   }) {
+    if (dto.type === DiscountType.PERCENTAGE && (dto.value === undefined || dto.value <= 0 || dto.value > 100 || Math.abs(Math.round(dto.value * 100) - dto.value * 100) > 1e-6))
+      throw new BadRequestException('Discount percentage must be between 0 and 100 with at most two decimal places.');
     if (
       dto.maximumQuantity !== undefined &&
       dto.minimumQuantity !== undefined &&
