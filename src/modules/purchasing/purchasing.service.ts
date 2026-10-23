@@ -174,12 +174,25 @@ export class PurchasingService {
       throw new BadRequestException(
         'A product can appear only once per purchase order.',
       );
-    if (
-      (await this.prisma.product.count({
-        where: { id: { in: ids }, organizationId },
-      })) !== ids.length
-    )
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: ids }, organizationId },
+      select: { id: true, trackSerials: true },
+    });
+    if (products.length !== ids.length)
       throw new BadRequestException('One or more products are invalid.');
+    const serializedIds = new Set(
+      products.filter((product) => product.trackSerials).map((product) => product.id),
+    );
+    if (
+      dto.items.some(
+        (item) =>
+          serializedIds.has(item.productId) &&
+          !Number.isInteger(item.quantity),
+      )
+    )
+      throw new BadRequestException(
+        'Serialized products require a whole-number order quantity.',
+      );
     let subtotal = 0,
       discountTotal = 0,
       taxTotal = 0;
