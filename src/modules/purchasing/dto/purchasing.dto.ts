@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -15,8 +16,8 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
 export class PurchaseOrderItemDto {
   @IsString() productId!: string;
   @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 3 })
-  @Min(0.001)
+  @IsInt({ message: 'Purchase order quantity must be a whole number.' })
+  @Min(1)
   quantity!: number;
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
