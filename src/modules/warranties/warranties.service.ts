@@ -4,7 +4,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { WarrantyStatus } from '@prisma/client';
+import { RecordStatus, WarrantyStatus } from '@prisma/client';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import type { SecurityRequestContext } from '../../common/security/request';
 import { hashToken } from '../../common/security/token';
@@ -47,6 +47,8 @@ export class WarrantiesService {
       }))
     )
       throw new NotFoundException('Product not found.');
+    if (await this.prisma.warrantyPolicy.findFirst({ where: { productId: dto.productId, status: RecordStatus.ACTIVE } }))
+      throw new ConflictException('An active warranty policy already exists for this product.');
     const value = await this.prisma.warrantyPolicy.create({ data: dto });
     await this.audit.record({
       userId: actor.id,
@@ -63,12 +65,13 @@ export class WarrantiesService {
     context: SecurityRequestContext,
   ) {
     const org = await this.organizationId(actor.id);
-    if (
-      !(await this.prisma.warrantyPolicy.findFirst({
+    const existing = await this.prisma.warrantyPolicy.findFirst({
         where: { id, product: { organizationId: org } },
-      }))
-    )
+      });
+    if (!existing)
       throw new NotFoundException('Warranty policy not found.');
+    if (dto.status === RecordStatus.ACTIVE && existing.status !== RecordStatus.ACTIVE && await this.prisma.warrantyPolicy.findFirst({ where: { productId: existing.productId, status: RecordStatus.ACTIVE, id: { not: id } } }))
+      throw new ConflictException('An active warranty policy already exists for this product.');
     const value = await this.prisma.warrantyPolicy.update({
       where: { id },
       data: dto,
