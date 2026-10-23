@@ -6,17 +6,18 @@ import {
   IsOptional,
   IsString,
   Length,
+  Max,
   Min,
 } from 'class-validator';
 export class CreateWarrantyPolicyDto {
   @IsString() productId!: string;
   @IsString() @Length(2, 120) name!: string;
-  @Type(() => Number) @IsInt() @Min(1) durationMonths!: number;
+  @Type(() => Number) @IsInt() @Min(1) @Max(120) durationMonths!: number;
   @IsOptional() @IsString() terms?: string;
 }
 export class UpdateWarrantyPolicyDto {
   @IsOptional() @IsString() @Length(2, 120) name?: string;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) durationMonths?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(120) durationMonths?: number;
   @IsOptional() @IsString() terms?: string;
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
 }

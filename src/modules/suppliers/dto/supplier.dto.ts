@@ -7,13 +7,14 @@ import {
   IsOptional,
   IsString,
   Length,
+  Matches,
   MaxLength,
 } from 'class-validator';
 export class CreateSupplierDto {
   @IsString() @Length(1, 40) code!: string;
   @IsString() @Length(2, 160) name!: string;
   @IsOptional() @IsString() @MaxLength(120) contactName?: string;
-  @IsOptional() @IsString() @MaxLength(30) phone?: string;
+  @IsOptional() @IsString() @Matches(/^\+?[0-9]{8,15}$/, { message: 'Please enter a valid phone number using digits and an optional leading +.' }) phone?: string;
   @IsOptional() @IsEmail() email?: string;
   @IsOptional() @IsObject() address?: Record<string, string>;
   @IsOptional() @IsBoolean() portalEnabled?: boolean;
@@ -24,7 +25,7 @@ export class CreateSupplierDto {
 export class UpdateSupplierDto {
   @IsOptional() @IsString() @Length(2, 160) name?: string;
   @IsOptional() @IsString() @MaxLength(120) contactName?: string;
-  @IsOptional() @IsString() @MaxLength(30) phone?: string;
+  @IsOptional() @IsString() @Matches(/^\+?[0-9]{8,15}$/, { message: 'Please enter a valid phone number using digits and an optional leading +.' }) phone?: string;
   @IsOptional() @IsEmail() email?: string;
   @IsOptional() @IsObject() address?: Record<string, string>;
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
