@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ "$#" -ne 4 ]]; then
-  echo "Usage: technova-deploy FRONTEND BACKEND MIGRATE AI" >&2
+usage() {
+  echo "Usage: technova-deploy FRONTEND BACKEND MIGRATE AI | --frontend IMAGE | --backend BACKEND_IMAGE MIGRATE_IMAGE | --ai IMAGE" >&2
   exit 64
-fi
+}
 
-readonly FRONTEND_IMAGE="$1"
-readonly BACKEND_IMAGE="$2"
-readonly BACKEND_MIGRATE_IMAGE="$3"
-readonly AI_IMAGE="$4"
 readonly DEPLOY_DIR=/opt/technova/deploy
 readonly COMPOSE_FILE="$DEPLOY_DIR/compose.production.yml"
 readonly SECRET_ENV=/etc/technova/production.env
@@ -17,8 +13,13 @@ readonly RELEASE_ENV="$DEPLOY_DIR/release.env"
 readonly PREVIOUS_ENV="$DEPLOY_DIR/release.previous.env"
 readonly BACKUP_DIR=/var/backups/technova/postgres
 
+readonly FRONTEND_PATTERN='^ghcr\.io/kariyakarwana/technova-pos@sha256:[0-9a-f]{64}$'
+readonly BACKEND_PATTERN='^ghcr\.io/kariyakarwana/technova-pos-api@sha256:[0-9a-f]{64}$'
+readonly BACKEND_MIGRATE_PATTERN='^ghcr\.io/kariyakarwana/technova-pos-api-migrate@sha256:[0-9a-f]{64}$'
+readonly AI_PATTERN='^ghcr\.io/kariyakarwana/technova-pos-ai@sha256:[0-9a-f]{64}$'
+
 validate_image() {
-  local value="$1"
+  local value="${1:-}"
   local pattern="$2"
   if [[ ! "$value" =~ $pattern ]]; then
     echo "Rejected invalid image reference: $value" >&2
@@ -26,16 +27,118 @@ validate_image() {
   fi
 }
 
-validate_image "$FRONTEND_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos@sha256:[0-9a-f]{64}$'
-validate_image "$BACKEND_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos-api@sha256:[0-9a-f]{64}$'
-validate_image "$BACKEND_MIGRATE_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos-api-migrate@sha256:[0-9a-f]{64}$'
-validate_image "$AI_IMAGE" '^ghcr\.io/kariyakarwana/technova-pos-ai@sha256:[0-9a-f]{64}$'
+load_release_env() {
+  if [[ ! -f "$RELEASE_ENV" || ! -r "$RELEASE_ENV" ]]; then
+    echo "Per-service deployment requires an existing readable release file: $RELEASE_ENV" >&2
+    exit 66
+  fi
+
+  local existing_frontend=""
+  local existing_backend=""
+  local existing_migrate=""
+  local existing_ai=""
+  local line key value
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+    if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]}"
+      if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      fi
+      case "$key" in
+        FRONTEND_IMAGE) existing_frontend="$value" ;;
+        BACKEND_IMAGE) existing_backend="$value" ;;
+        BACKEND_MIGRATE_IMAGE) existing_migrate="$value" ;;
+        AI_IMAGE) existing_ai="$value" ;;
+      esac
+    fi
+  done < "$RELEASE_ENV"
+
+  case "$mode" in
+    frontend)
+      BACKEND_IMAGE="$existing_backend"
+      BACKEND_MIGRATE_IMAGE="$existing_migrate"
+      AI_IMAGE="$existing_ai"
+      ;;
+    backend)
+      FRONTEND_IMAGE="$existing_frontend"
+      AI_IMAGE="$existing_ai"
+      ;;
+    ai)
+      FRONTEND_IMAGE="$existing_frontend"
+      BACKEND_IMAGE="$existing_backend"
+      BACKEND_MIGRATE_IMAGE="$existing_migrate"
+      ;;
+  esac
+}
+
+mode=""
+FRONTEND_IMAGE=""
+BACKEND_IMAGE=""
+BACKEND_MIGRATE_IMAGE=""
+AI_IMAGE=""
+
+if [[ "$#" -eq 4 && "$1" != -* ]]; then
+  mode="full"
+  FRONTEND_IMAGE="$1"
+  BACKEND_IMAGE="$2"
+  BACKEND_MIGRATE_IMAGE="$3"
+  AI_IMAGE="$4"
+elif [[ "$#" -eq 2 && "$1" == "--frontend" ]]; then
+  mode="frontend"
+  FRONTEND_IMAGE="$2"
+elif [[ "$#" -eq 3 && "$1" == "--backend" ]]; then
+  mode="backend"
+  BACKEND_IMAGE="$2"
+  BACKEND_MIGRATE_IMAGE="$3"
+elif [[ "$#" -eq 2 && "$1" == "--ai" ]]; then
+  mode="ai"
+  AI_IMAGE="$2"
+else
+  usage
+fi
+
+case "$mode" in
+  full)
+    validate_image "$FRONTEND_IMAGE" "$FRONTEND_PATTERN"
+    validate_image "$BACKEND_IMAGE" "$BACKEND_PATTERN"
+    validate_image "$BACKEND_MIGRATE_IMAGE" "$BACKEND_MIGRATE_PATTERN"
+    validate_image "$AI_IMAGE" "$AI_PATTERN"
+    ;;
+  frontend)
+    validate_image "$FRONTEND_IMAGE" "$FRONTEND_PATTERN"
+    ;;
+  backend)
+    validate_image "$BACKEND_IMAGE" "$BACKEND_PATTERN"
+    validate_image "$BACKEND_MIGRATE_IMAGE" "$BACKEND_MIGRATE_PATTERN"
+    ;;
+  ai)
+    validate_image "$AI_IMAGE" "$AI_PATTERN"
+    ;;
+esac
 
 exec 9>/run/lock/technova-deploy.lock
-if ! flock -n 9; then
-  echo "Another deployment is already running" >&2
+if ! flock -w 1800 9; then
+  echo "Timed out waiting for deployment lock after 30 minutes" >&2
   exit 75
 fi
+
+if [[ "$mode" != "full" ]]; then
+  load_release_env
+  validate_image "$FRONTEND_IMAGE" "$FRONTEND_PATTERN"
+  validate_image "$BACKEND_IMAGE" "$BACKEND_PATTERN"
+  validate_image "$BACKEND_MIGRATE_IMAGE" "$BACKEND_MIGRATE_PATTERN"
+  validate_image "$AI_IMAGE" "$AI_PATTERN"
+fi
+
+readonly FRONTEND_IMAGE
+readonly BACKEND_IMAGE
+readonly BACKEND_MIGRATE_IMAGE
+readonly AI_IMAGE
 
 test -r "$SECRET_ENV"
 test -r "$COMPOSE_FILE"
@@ -123,4 +226,3 @@ fi
 "${compose_current[@]}" ps
 docker image prune -f --filter 'until=168h' || true
 echo "Deployment completed successfully"
-
