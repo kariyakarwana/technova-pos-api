@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 const OWNER = 'kariyakarwana';
 
 function assertOwnerMerge(context, branch, pulls) {
@@ -40,5 +41,5 @@ async function main() {
   console.log(`Production authorized by owner merge of PR #${assertOwnerMerge(context, branch, pulls)}.`);
 }
 
-module.exports = { assertOwnerMerge };
-if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
+export { assertOwnerMerge };
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -1,5 +1,5 @@
 // Release tags are created only after deploy succeeds. Never move an existing tag.
-const fs = require('node:fs');
+import fs from 'node:fs';
 async function main() {
   if (process.env.GITHUB_ACTOR !== 'kariyakarwana' || process.env.GITHUB_TRIGGERING_ACTOR !== 'kariyakarwana' ||
       process.env.GITHUB_EVENT_NAME !== 'push' || process.env.GITHUB_REF !== 'refs/heads/main') {

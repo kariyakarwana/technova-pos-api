@@ -41,7 +41,7 @@ jobs:
         run: bash deploy/test-deployment.sh
 
       - name: Test deployment authorization
-        run: node --test deploy/check-release-owner.test.cjs
+        run: node --test deploy/check-release-owner.test.mjs
 
       - name: Install locked dependencies
         run: npm ci
@@ -72,7 +72,7 @@ jobs:
       - name: Require owner's merge permission
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node deploy/check-release-owner.cjs
+        run: node deploy/check-release-owner.mjs
 
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -158,7 +158,7 @@ jobs:
       - name: Recheck owner and current main before accessing VPS
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node deploy/check-release-owner.cjs
+        run: node deploy/check-release-owner.mjs
       - name: Require completed VPS setup
         env:
           READY: ${{ vars.VPS_DEPLOY_READY }}
@@ -231,4 +231,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_IMAGE: ${{ needs.publish.outputs.backend_image }}
           MIGRATION_IMAGE: ${{ needs.publish.outputs.backend_migrate_image }}
-        run: node deploy/record-release.cjs
+        run: node deploy/record-release.mjs

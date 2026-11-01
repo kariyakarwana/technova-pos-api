@@ -1,6 +1,6 @@
-const { test } = require('node:test');
-const assert = require('node:assert/strict');
-const { assertOwnerMerge } = require('./check-release-owner.cjs');
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { assertOwnerMerge } from './check-release-owner.mjs';
 const context = { event: 'push', ref: 'refs/heads/main', actor: 'kariyakarwana',
   triggeringActor: 'kariyakarwana', sha: 'release-sha', repository: 'kariyakarwana/technova-pos-api' };
 const branch = { commit: { sha: context.sha } };
