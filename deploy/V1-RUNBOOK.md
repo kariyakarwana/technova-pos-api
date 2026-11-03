@@ -5,6 +5,10 @@ runs succeed and their `v1.0.0` releases exist. No VPS changes were performed by
 the coding agent. Main is the production branch; no permanent release branch is
 needed. The temporary `release/v1-deployment` branches are reviewed through PRs.
 
+## Public SSH transport update
+
+The public SSH workflow update supersedes the Tailscale connection instructions below. Follow [PUBLIC-SSH.md](PUBLIC-SSH.md) for the current endpoint, firewall, SSH secrets and activation steps. The V1 server installation and recovery instructions still apply.
+
 ## Permission model
 
 - Only a PR merged into `main` by **kariyakarwana** can publish and deploy.
