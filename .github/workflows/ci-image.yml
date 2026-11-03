@@ -146,13 +146,13 @@ jobs:
       url: ${{ vars.PUBLIC_BASE_URL }}
     permissions:
       contents: read
-      id-token: write
       pull-requests: read
     env:
       BACKEND_IMAGE: ${{ needs.publish.outputs.backend_image }}
       BACKEND_MIGRATE_IMAGE: ${{ needs.publish.outputs.backend_migrate_image }}
       VPS_HOST: ${{ vars.VPS_HOST }}
       VPS_USER: ${{ vars.VPS_USER }}
+      VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT || '22' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Recheck owner and current main before accessing VPS
@@ -165,6 +165,11 @@ jobs:
         run: |
           test "$READY" = true || { echo 'Navod must complete the V1 VPS runbook before deployment.' >&2; exit 1; }
           test -n "$VPS_HOST" && test -n "$VPS_USER"
+          [[ "$VPS_SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$VPS_SSH_PORT >= 1 && 10#$VPS_SSH_PORT <= 65535 ))
+          if [[ "$VPS_HOST" == '100.79.83.54' ]]; then
+            echo 'VPS_HOST still contains the old Tailscale address; configure the public SSH endpoint.' >&2
+            exit 1
+          fi
       - name: Validate immutable image references
         shell: bash
         run: |
@@ -181,14 +186,6 @@ jobs:
             fi
           done
 
-      - name: Connect runner to Tailscale
-        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
-          tags: tag:ci
-          ping: ${{ vars.VPS_HOST }}
-
       - name: Prepare SSH identity
         shell: bash
         env:
@@ -196,6 +193,7 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY" && test -n "$KNOWN_HOSTS"
           install -d -m 0700 "$HOME/.ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/technova_deploy"
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
@@ -208,7 +206,7 @@ jobs:
           printf -v remote_command \
             'test "$(sudo /usr/local/sbin/technova-deploy --version)" = "technova-deploy 1.0.0" && sudo /usr/local/sbin/technova-deploy --backend %q %q' \
             "$BACKEND_IMAGE" "$BACKEND_MIGRATE_IMAGE"
-          ssh -i "$HOME/.ssh/technova_deploy" \
+          ssh -p "$VPS_SSH_PORT" -i "$HOME/.ssh/technova_deploy" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
