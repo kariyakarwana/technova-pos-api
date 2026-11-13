@@ -12,6 +12,12 @@ readonly SECRET_ENV=/etc/technova/production.env
 readonly RELEASE_ENV="$DEPLOY_DIR/release.env"
 readonly PREVIOUS_ENV="$DEPLOY_DIR/release.previous.env"
 readonly BACKUP_DIR=/var/backups/technova/postgres
+readonly PUBLIC_URL_FILE=/etc/technova/public-base-url
+
+if [[ "${1:-}" == "--version" && "$#" -eq 1 ]]; then
+  echo 'technova-deploy 1.0.0'
+  exit 0
+fi
 
 readonly FRONTEND_PATTERN='^ghcr\.io/kariyakarwana/technova-pos@sha256:[0-9a-f]{64}$'
 readonly BACKEND_PATTERN='^ghcr\.io/kariyakarwana/technova-pos-api@sha256:[0-9a-f]{64}$'
@@ -142,10 +148,82 @@ readonly AI_IMAGE
 
 test -r "$SECRET_ENV"
 test -r "$COMPOSE_FILE"
+test -r "$PUBLIC_URL_FILE"
+PUBLIC_BASE_URL="$(cat "$PUBLIC_URL_FILE")"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
+if [[ ! "$PUBLIC_BASE_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+  echo 'A production HTTPS origin is required in /etc/technova/public-base-url' >&2
+  exit 65
+fi
+readonly PUBLIC_BASE_URL
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
 
 candidate="$(mktemp "$DEPLOY_DIR/release.candidate.XXXXXX")"
-trap 'rm -f "$candidate"' EXIT
+previous_available=false
+rollout_started=false
+migrations_started=false
+committed=false
+if [[ -f "$RELEASE_ENV" ]]; then
+  cp --preserve=mode,ownership,timestamps "$RELEASE_ENV" "$PREVIOUS_ENV"
+  previous_available=true
+fi
+
+case "$mode" in
+  frontend) services=(frontend); pull_services=(frontend) ;;
+  backend) services=(backend); pull_services=(backend migrate) ;;
+  ai) services=(ai-service); pull_services=(ai-service) ;;
+  full) services=(postgres minio ai-service backend frontend); pull_services=() ;;
+esac
+
+health_checks() {
+  local -a compose=("$@")
+  # Explicitly test AI as well as API/UI. These run under the server lock.
+  "${compose[@]}" exec -T ai-service python -c \
+    "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" >/dev/null || return 1
+  local endpoint
+  for endpoint in \
+    http://127.0.0.1:4000/api/v1/health \
+    http://127.0.0.1:3000/login \
+    "$PUBLIC_BASE_URL/nginx-health" \
+    "$PUBLIC_BASE_URL/api/v1/health" \
+    "$PUBLIC_BASE_URL/login"; do
+    curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+      --retry 3 --retry-delay 3 --retry-all-errors "$endpoint" >/dev/null || return 1
+  done
+}
+
+finish() {
+  local status="$?"
+  trap - EXIT INT TERM HUP
+  set +e
+  if [[ "$status" -ne 0 && "$rollout_started" == true && "$committed" != true ]]; then
+    echo 'Deployment failed; recovering previous application images.' >&2
+    if [[ "$previous_available" == true ]]; then
+      local -a previous=(docker compose --project-name technova-pos-production
+        --env-file "$SECRET_ENV" --env-file "$PREVIOUS_ENV" -f "$COMPOSE_FILE")
+      local -a rollback_args=(--no-deps)
+      [[ "$mode" == full ]] && rollback_args=()
+      # Previous images were pre-pulled before mutation; rollback needs no registry access.
+      if "${previous[@]}" up -d --wait --wait-timeout 180 "${rollback_args[@]}" "${services[@]}" \
+        && health_checks "${previous[@]}"; then
+        echo 'Previous application images restored and verified.' >&2
+      else
+        echo 'CRITICAL: rollback verification failed; operator intervention required.' >&2
+      fi
+    else
+      echo 'No previous release exists; operator intervention required.' >&2
+    fi
+  fi
+  if [[ "$status" -ne 0 && "$migrations_started" == true ]]; then
+    echo 'Database migrations are NOT reversed. Use backward-compatible migrations and the verified backup for recovery.' >&2
+  fi
+  rm -f "$candidate"
+  exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 cat > "$candidate" <<EOF
 FRONTEND_IMAGE=$FRONTEND_IMAGE
@@ -164,65 +242,41 @@ compose_candidate=(
 )
 
 "${compose_candidate[@]}" config --quiet
-"${compose_candidate[@]}" pull
-"${compose_candidate[@]}" up -d --wait postgres
+"${compose_candidate[@]}" pull "${pull_services[@]}"
+if [[ "$previous_available" == true ]]; then
+  # Ensure recovery images remain available locally before changing any running service.
+  docker compose --project-name technova-pos-production --env-file "$SECRET_ENV" \
+    --env-file "$PREVIOUS_ENV" -f "$COMPOSE_FILE" pull "${pull_services[@]}"
+fi
+if [[ "$mode" == full ]]; then
+  rollout_started=true
+  "${compose_candidate[@]}" up -d --wait --wait-timeout 180 postgres
+fi
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-if [[ -f "$RELEASE_ENV" ]]; then
-  cp --preserve=mode,ownership,timestamps "$RELEASE_ENV" "$PREVIOUS_ENV"
+if [[ "$mode" == backend || "$mode" == full ]]; then
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup="$BACKUP_DIR/pre-deploy-$timestamp.dump"
   postgres_user="$("${compose_candidate[@]}" exec -T postgres printenv POSTGRES_USER)"
   postgres_db="$("${compose_candidate[@]}" exec -T postgres printenv POSTGRES_DB)"
+  umask 077
   "${compose_candidate[@]}" exec -T postgres \
-    pg_dump -U "$postgres_user" -d "$postgres_db" -Fc \
-    > "$BACKUP_DIR/pre-deploy-$timestamp.dump"
+    pg_dump -U "$postgres_user" -d "$postgres_db" -Fc > "$backup"
+  test -s "$backup"
+  "${compose_candidate[@]}" exec -T postgres pg_restore --list < "$backup" >/dev/null
+  migrations_started=true
+  "${compose_candidate[@]}" run --rm --no-deps migrate
 fi
 
-"${compose_candidate[@]}" run --rm migrate
-install -o root -g root -m 0600 "$candidate" "$RELEASE_ENV"
-
-compose_current=(
-  docker compose
-  --project-name technova-pos-production
-  --env-file "$SECRET_ENV"
-  --env-file "$RELEASE_ENV"
-  -f "$COMPOSE_FILE"
-)
-
-"${compose_current[@]}" up -d --remove-orphans
-
-healthy=false
-for _attempt in $(seq 1 36); do
-  if curl --fail --silent http://127.0.0.1:4000/api/v1/health >/dev/null \
-     && curl --fail --silent http://127.0.0.1:3000/login >/dev/null; then
-    healthy=true
-    break
-  fi
-  sleep 5
-done
-
-if [[ "$healthy" != true ]]; then
-  echo "New release failed health checks" >&2
-  "${compose_current[@]}" ps >&2 || true
-  "${compose_current[@]}" logs --tail=100 backend frontend ai-service >&2 || true
-
-  if [[ -f "$PREVIOUS_ENV" ]]; then
-    install -o root -g root -m 0600 "$PREVIOUS_ENV" "$RELEASE_ENV"
-    compose_previous=(
-      docker compose
-      --project-name technova-pos-production
-      --env-file "$SECRET_ENV"
-      --env-file "$RELEASE_ENV"
-      -f "$COMPOSE_FILE"
-    )
-    "${compose_previous[@]}" pull
-    "${compose_previous[@]}" up -d --remove-orphans
-    echo "Previous application images restored" >&2
-  fi
-
-  echo "Database migrations were not reversed" >&2
-  exit 1
-fi
-
-"${compose_current[@]}" ps
-docker image prune -f --filter 'until=168h' || true
-echo "Deployment completed successfully"
+rollout_started=true
+up_args=(--no-deps)
+[[ "$mode" == full ]] && up_args=()
+"${compose_candidate[@]}" up -d --wait --wait-timeout 180 "${up_args[@]}" "${services[@]}"
+health_checks "${compose_candidate[@]}"
+"${compose_candidate[@]}" ps
+# Commit the release ledger only after the entire acceptance check passes.
+# candidate and release.env are on the same filesystem, so rename is atomic.
+chown root:root "$candidate"
+chmod 0600 "$candidate"
+mv -f "$candidate" "$RELEASE_ENV"
+committed=true
+echo 'Deployment completed successfully'
