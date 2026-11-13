@@ -770,16 +770,114 @@ export class AuthService {
     );
   }
 
+  private getFrontendUrl(): string {
+    return (
+      this.config.get<string>('PUBLIC_FRONTEND_URL')?.trim() ||
+      this.config.getOrThrow<string>('FRONTEND_URL')
+    );
+  }
+
   async sendSupplierWelcomeEmail(
     to: string,
     contactName: string,
     temporaryPassword: string,
   ): Promise<void> {
-    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    const loginUrl = `${this.getFrontendUrl()}/login`;
     await this.sendMail(
       to,
       'Your TechNova POS supplier portal account',
       `<p>Hello ${this.escapeHtml(contactName)},</p><p>Your TechNova supplier portal is ready. You can review purchase orders, respond with availability or proposed changes, and submit dispatch and invoice information.</p><p><strong>Email:</strong> ${this.escapeHtml(to)}<br/><strong>Temporary password:</strong> <code>${this.escapeHtml(temporaryPassword)}</code></p><p><a href="${this.escapeHtml(loginUrl)}">Sign in to the supplier portal</a></p><p>For security, change this temporary password immediately after signing in. Do not share it with anyone.</p>`,
+    );
+  }
+
+  async sendTenantAdminEmailChangedNotice(
+    oldEmail: string,
+    adminName: string,
+    newEmail: string,
+    organizationName: string,
+  ): Promise<void> {
+    const safeName = this.escapeHtml(adminName);
+    const safeOld = this.escapeHtml(oldEmail);
+    const safeNew = this.escapeHtml(newEmail);
+    const safeOrg = this.escapeHtml(organizationName);
+
+    await this.sendMail(
+      oldEmail,
+      `TechNova POS: Tenant Admin email changed for ${organizationName}`,
+      `<p>Hello ${safeName},</p>
+<p>This is a security notification that the Tenant Super Admin login email for <strong>${safeOrg}</strong> has been updated by the TechNova Platform Administrator.</p>
+<p><strong>Previous email:</strong> ${safeOld}<br/><strong>New Tenant Admin email:</strong> ${safeNew}</p>
+<p>Your login access under <code>${safeOld}</code> has been replaced and the password has been reset for the new email address. If you did not authorize this change, please contact TechNova Cloud Support immediately.</p>`,
+    );
+  }
+
+  async sendTenantAdminTemporaryPasswordEmail(
+    to: string,
+    adminName: string,
+    organizationName: string,
+    temporaryPassword: string,
+    isReset = true,
+  ): Promise<void> {
+    const loginUrl = `${this.getFrontendUrl()}/login`;
+    const safeName = this.escapeHtml(adminName);
+    const safeOrg = this.escapeHtml(organizationName);
+    const safeEmail = this.escapeHtml(to);
+    const safePassword = this.escapeHtml(temporaryPassword);
+
+    await this.sendMail(
+      to,
+      `Your TechNova POS Tenant Admin account (${organizationName})`,
+      `<p>Hello ${safeName},</p>
+<p>${
+        isReset
+          ? `Your Tenant Super Admin login email and password for <strong>${safeOrg}</strong> have been set up / reset.`
+          : `Your TechNova POS Tenant Super Admin account for <strong>${safeOrg}</strong> is ready.`
+      }</p>
+<p><strong>Organization:</strong> ${safeOrg}<br/><strong>Email:</strong> ${safeEmail}<br/><strong>Temporary password:</strong> <code>${safePassword}</code></p>
+<p><a href="${this.escapeHtml(loginUrl)}">Sign in to TechNova POS</a></p>
+<p>For security, you will be required to change this temporary password immediately after signing in. Do not share it with anyone.</p>`,
+    );
+  }
+
+  async sendPaymentReminderEmail(
+    to: string,
+    adminName: string,
+    organizationName: string,
+    invoiceNumber: string,
+    amountUsd: number,
+    dueDate: Date,
+    daysRemaining: number,
+  ): Promise<void> {
+    const loginUrl = `${this.getFrontendUrl()}/dashboard/billing`;
+    const safeName = this.escapeHtml(adminName);
+    const safeOrg = this.escapeHtml(organizationName);
+    const formattedDue = dueDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: '2-digit',
+      year: 'numeric',
+    });
+
+    let urgencyText = `${daysRemaining} days remaining`;
+    let bannerTitle = `Payment Reminder (${daysRemaining} Days Remaining)`;
+    if (daysRemaining === 1) {
+      urgencyText = 'Due Tomorrow';
+      bannerTitle = 'Urgent: Subscription Payment Due Tomorrow';
+    } else if (daysRemaining <= 0) {
+      urgencyText = 'Payment Overdue';
+      bannerTitle = 'Action Required: Subscription Payment Overdue';
+    }
+
+    await this.sendMail(
+      to,
+      `TechNova POS: ${bannerTitle} — ${organizationName}`,
+      `<p>Hello ${safeName},</p>
+<p>This is a billing notification regarding the active subscription for <strong>${safeOrg}</strong>.</p>
+<p><strong>Invoice Number:</strong> ${this.escapeHtml(invoiceNumber)}<br/>
+<strong>Amount Due:</strong> $${amountUsd.toFixed(2)} USD<br/>
+<strong>Due Date:</strong> ${formattedDue} (${urgencyText})</p>
+<p>To avoid service disruption, please settle this invoice via our direct corporate bank wire or instant online payment portal.</p>
+<p><a href="${this.escapeHtml(loginUrl)}" style="display:inline-block;padding:10px 20px;background-color:#0E9384;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:bold;">Review & Pay Invoice Online</a></p>
+<p>Thank you for choosing TechNova POS Cloud.</p>`,
     );
   }
 

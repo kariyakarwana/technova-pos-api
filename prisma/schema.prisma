@@ -474,6 +474,10 @@ model Organization {
   dashboards                        Dashboard[]
   dashboardTemplates                DashboardTemplate[]
   visualThemes                      VisualTheme[]
+  subscription                      Subscription?
+  subscriptionRequests              SubscriptionRequest[]
+  usages                            OrganizationUsage[]
+  emailConfig                       TenantEmailConfig?
 
   @@index([status])
   @@map("organizations")
@@ -1606,4 +1610,257 @@ model VisualTheme {
 
   @@index([organizationId, isDefault])
   @@map("visual_themes")
+}
+
+// ============================================================================
+// Multi-Tenant Commercial SaaS, Subscriptions & Metering
+// ============================================================================
+
+enum PlanTier {
+  BASIC
+  STANDARD
+  PROFESSIONAL
+  ENTERPRISE
+  CUSTOM
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  SUSPENDED
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum SmtpProviderType {
+  PLATFORM_DEFAULT
+  TENANT_CUSTOM_SMTP
+  CLOUD_API
+}
+
+enum AddonQuotaTarget {
+  BRANCHES
+  WHATSAPP_BILLS
+  WHATSAPP_MARKETING
+  EMAILS
+  AI_REQUESTS
+  CUSTOM_FEATURE
+}
+
+model Plan {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  tier            PlanTier @default(CUSTOM)
+  name            String
+  description     String?
+  priceUsd        Decimal  @db.Decimal(10, 2)
+  vatRate         Decimal  @default(0.18) @db.Decimal(5, 4)
+  priceWithVatUsd Decimal  @db.Decimal(10, 2)
+  billingCycle    String   @default("MONTHLY")
+  isActive        Boolean  @default(true)
+
+  // Hard Limits & Allowances
+  maxBranches              Int @default(1)
+  maxInternalUsers         Int @default(10)
+  monthlyEmailLimit        Int @default(0)
+  monthlyWhatsAppBills     Int @default(0)
+  monthlyWhatsAppMarketing Int @default(0)
+  monthlyAiRequests        Int @default(0)
+
+  // Built-in Feature Flags
+  multiBranchEnabled       Boolean @default(false)
+  emailEnabled             Boolean @default(false)
+  whatsAppBillsEnabled     Boolean @default(false)
+  whatsAppMarketingEnabled Boolean @default(false)
+  aiEnabled                Boolean @default(false)
+
+  // Extensible Custom & Future Features: [{ key, label, enabled, description? }]
+  features Json @default("[]")
+
+  subscriptions Subscription[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("plans")
+}
+
+model AddonPack {
+  id           String           @id @default(cuid())
+  code         String           @unique
+  name         String
+  description  String?
+  quotaTarget  AddonQuotaTarget @default(CUSTOM_FEATURE)
+  unitsPerPack Int              @default(0)
+  priceUsd     Decimal          @db.Decimal(10, 2)
+  billingCycle String           @default("ONE_TIME")
+  features     Json             @default("[]")
+  isActive     Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  allocations SubscriptionAddon[]
+
+  @@map("addon_packs")
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  organizationId     String             @unique
+  planId             String
+  status             SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart DateTime           @default(now())
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean            @default(false)
+
+  // Custom limit overrides & allocated add-on packs
+  extraBranches          Int @default(0)
+  extraEmailLimit        Int @default(0)
+  extraWhatsAppBills     Int @default(0)
+  extraWhatsAppMarketing Int @default(0)
+  extraAiRequests        Int @default(0)
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan                  @relation(fields: [planId], references: [id])
+  invoices     SubscriptionInvoice[]
+  addons       SubscriptionAddon[]
+  requests     SubscriptionRequest[]
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@map("subscriptions")
+}
+
+model SubscriptionAddon {
+  id             String    @id @default(cuid())
+  subscriptionId String
+  addonPackId    String?
+  type           String
+  quantity       Int       @default(1)
+  grantedUnits   Int       @default(0)
+  priceUsd       Decimal   @db.Decimal(10, 2)
+  features       Json      @default("[]")
+  isActive       Boolean   @default(true)
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  addonPack    AddonPack?   @relation(fields: [addonPackId], references: [id], onDelete: SetNull)
+
+  @@index([subscriptionId])
+  @@index([addonPackId])
+  @@map("subscription_addons")
+}
+
+model SubscriptionInvoice {
+  id             String        @id @default(cuid())
+  subscriptionId String
+  invoiceNumber  String        @unique
+  subtotalUsd    Decimal       @db.Decimal(10, 2)
+  vatAmountUsd   Decimal       @db.Decimal(10, 2)
+  totalAmountUsd Decimal       @db.Decimal(10, 2)
+  status         InvoiceStatus @default(PENDING)
+  issuedDate     DateTime      @default(now())
+  dueDate        DateTime
+  paidAt         DateTime?
+  paymentMethod  String?       @default("BANK_TRANSFER")
+  paymentRef     String?
+  notes          String?
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status])
+  @@map("subscription_invoices")
+}
+
+model OrganizationUsage {
+  id             String @id @default(cuid())
+  organizationId String
+  periodYear     Int
+  periodMonth    Int
+
+  emailsSent            Int @default(0)
+  whatsAppBillsSent     Int @default(0)
+  whatsAppMarketingSent Int @default(0)
+  aiRequestsUsed        Int @default(0)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedAt    DateTime     @updatedAt
+
+  @@unique([organizationId, periodYear, periodMonth])
+  @@index([organizationId])
+  @@map("organization_usages")
+}
+
+model TenantEmailConfig {
+  id             String           @id @default(cuid())
+  organizationId String           @unique
+  providerType   SmtpProviderType @default(PLATFORM_DEFAULT)
+
+  // Custom BYO-SMTP credentials
+  smtpHost     String?
+  smtpPort     Int?    @default(587)
+  smtpSecure   Boolean @default(false)
+  smtpUser     String?
+  smtpPassword String?
+  fromEmail    String?
+  fromName     String?
+
+  // Cloud API credentials (Resend / AWS SES / SendGrid)
+  apiKey    String?
+  apiRegion String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_email_configs")
+}
+
+enum SubscriptionRequestType {
+  PLAN_CHANGE
+  ADDON_PACK
+}
+
+enum SubscriptionRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model SubscriptionRequest {
+  id             String                    @id @default(cuid())
+  organizationId String
+  subscriptionId String
+  requestedById  String?
+  type           SubscriptionRequestType
+  status         SubscriptionRequestStatus @default(PENDING)
+
+  targetPlanCode String?
+  addonCode      String?
+  quantity       Int     @default(1)
+
+  notes       String?
+  paymentRef  String?
+  reviewNotes String?
+  reviewedById String?
+  reviewedAt  DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId, status])
+  @@index([type, status])
+  @@map("subscription_requests")
 }

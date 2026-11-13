@@ -1,3 +1,4 @@
+import { QuotaService } from '../subscriptions/quota.service';
 import {
   BadRequestException,
   Injectable,
@@ -53,6 +54,7 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly quota: QuotaService,
   ) {}
   private async org(userId: string) {
     const m = await this.prisma.organizationUser.findFirst({
@@ -230,7 +232,11 @@ export class NotificationsService {
     if (template && template.status !== RecordStatus.ACTIVE)
       return { queued: false };
 
-    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    const frontendBaseUrl =
+      (typeof this.config.get === 'function'
+        ? this.config.get<string>('PUBLIC_FRONTEND_URL')?.trim()
+        : undefined) || this.config.getOrThrow<string>('FRONTEND_URL');
+    const loginUrl = `${frontendBaseUrl}/login`;
     const payload: Prisma.InputJsonObject = {
       companyName: input.companyName,
       employeeId: input.employeeId,
@@ -624,6 +630,7 @@ export class NotificationsService {
   }
   async appNotifications(userId: string, q: AppNotificationQueryDto) {
     await this.markHandledPurchaseOrderNotificationsRead(userId);
+    await this.syncTenantAdminUpcomingPaymentNotifications(userId);
     const where: Prisma.AppNotificationWhereInput = {
       recipientUserId: userId,
       readAt: q.unread === 'true' ? null : undefined,
@@ -698,6 +705,112 @@ export class NotificationsService {
       });
     }
   }
+
+  private async syncTenantAdminUpcomingPaymentNotifications(userId: string) {
+    if (!this.prisma.user?.findUnique || !this.prisma.subscriptionInvoice?.findMany) return;
+
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          roles: { include: { role: true } },
+          organizationMemberships: { select: { organizationId: true } },
+        },
+      });
+      if (!user || !user.organizationMemberships?.length) return;
+
+      const isTenantAdmin = user.roles?.some((r) => r.role?.name === 'SUPER_ADMIN');
+      if (!isTenantAdmin) return;
+
+      const orgIds = user.organizationMemberships.map((m) => m.organizationId);
+      const now = new Date();
+      const msPerDay = 1000 * 60 * 60 * 24;
+
+      const pendingInvoices = await this.prisma.subscriptionInvoice.findMany({
+        where: {
+          subscription: { organizationId: { in: orgIds } },
+          status: { in: ['PENDING', 'OVERDUE'] },
+        },
+        include: {
+          subscription: {
+            select: { organizationId: true, organization: { select: { name: true } } },
+          },
+        },
+        orderBy: { dueDate: 'asc' },
+      });
+
+      for (const inv of pendingInvoices) {
+        const diffMs = new Date(inv.dueDate).getTime() - now.getTime();
+        const days = Math.ceil(diffMs / msPerDay);
+
+        // Only alert if within 15 days or overdue
+        if (days > 15) continue;
+
+        let title = `Upcoming Payment in ${days} Days`;
+        if (days < 0) {
+          title = `Subscription Payment Overdue (${Math.abs(days)} Days)`;
+        } else if (days === 0) {
+          title = 'Urgent: Subscription Payment Due Today';
+        } else if (days === 1) {
+          title = 'Urgent: Subscription Payment Due Tomorrow';
+        } else if (days <= 5) {
+          title = `Action Required: Payment Due in ${days} Days`;
+        } else if (days <= 10) {
+          title = `Upcoming Payment in ${days} Days`;
+        } else if (days <= 15) {
+          title = `Renewal Notice (${days} Days Remaining)`;
+        }
+
+        const message = `Monthly subscription invoice #${inv.invoiceNumber} ($${Number(inv.totalAmountUsd).toFixed(2)}) is awaiting payment settlement. Due on ${new Date(inv.dueDate).toLocaleDateString()}.`;
+
+        const existing = await this.prisma.appNotification.findFirst({
+          where: {
+            recipientUserId: userId,
+            eventType: 'BILLING_PAYMENT_REMINDER',
+            title,
+          },
+          select: { id: true },
+        });
+
+        if (!existing) {
+          await this.prisma.appNotification.create({
+            data: {
+              organizationId: inv.subscription.organizationId,
+              recipientUserId: userId,
+              eventType: 'BILLING_PAYMENT_REMINDER',
+              title,
+              message,
+              actionUrl: '/dashboard/billing',
+            },
+          });
+        }
+      }
+
+      // Auto-reconcile paid invoices: if an invoice is paid, mark related pending notifications as read
+      const paidInvoices = await this.prisma.subscriptionInvoice.findMany({
+        where: {
+          subscription: { organizationId: { in: orgIds } },
+          status: 'PAID',
+        },
+        select: { invoiceNumber: true },
+      });
+      if (paidInvoices.length > 0) {
+        for (const paid of paidInvoices) {
+          await this.prisma.appNotification.updateMany({
+            where: {
+              recipientUserId: userId,
+              eventType: 'BILLING_PAYMENT_REMINDER',
+              message: { contains: `#${paid.invoiceNumber}` },
+              readAt: null,
+            },
+            data: { readAt: new Date() },
+          });
+        }
+      }
+    } catch {
+      // Background sync must not break notification fetch
+    }
+  }
   async readAppNotification(userId: string, id: string) {
     const result = await this.prisma.appNotification.updateMany({
       where: { id, recipientUserId: userId },
@@ -724,7 +837,8 @@ export class NotificationsService {
         attemptCount: { lt: 5 },
       },
       include: {
-        domainEvent: { select: { eventType: true, payload: true } },
+        domainEvent: { select: { eventType: true, payload: true, organizationId: true } },
+        template: { select: { organizationId: true } },
       },
       take: limit,
       orderBy: { createdAt: 'asc' },
@@ -739,6 +853,7 @@ export class NotificationsService {
       });
       if (!claimed.count) continue;
       try {
+        const targetOrgId = row.template?.organizationId ?? row.domainEvent?.organizationId ?? undefined;
         const providerId = await this.deliver(
           row.channel,
           row.recipient,
@@ -746,6 +861,7 @@ export class NotificationsService {
           row.body,
           row.domainEvent?.eventType,
           row.domainEvent?.payload,
+          targetOrgId,
         );
         await this.prisma.$transaction([
           this.prisma.deliveryAttempt.create({
@@ -863,27 +979,76 @@ export class NotificationsService {
     body: string,
     eventType?: string,
     payload?: Prisma.JsonValue,
+    organizationId?: string,
   ) {
     if (channel === NotificationChannel.EMAIL) {
-      const transporter = nodemailer.createTransport({
-        host: this.config.getOrThrow('SMTP_HOST'),
-        port: Number(this.config.get('SMTP_PORT') ?? 587),
-        secure: false,
-        auth: {
-          user: this.config.getOrThrow('SMTP_USER'),
-          pass: this.config.getOrThrow('SMTP_PASSWORD'),
-        },
-      });
+      if (organizationId) {
+        const check = await this.quota.canSendEmail(organizationId);
+        if (!check.allowed) {
+          return 'SKIPPED_EMAIL_QUOTA_EXCEEDED';
+        }
+      }
+
+      // 3-Method Dynamic SMTP: Check if tenant has BYO-SMTP configured
+      const tenantEmail = organizationId
+        ? await this.prisma.tenantEmailConfig.findUnique({ where: { organizationId } })
+        : null;
+
+      let transporter;
+      let fromAddress: string;
+
+      if (tenantEmail?.providerType === 'TENANT_CUSTOM_SMTP' && tenantEmail.smtpHost && tenantEmail.smtpUser) {
+        // Method 2: Tenant BYO-SMTP
+        transporter = nodemailer.createTransport({
+          host: tenantEmail.smtpHost,
+          port: Number(tenantEmail.smtpPort ?? 587),
+          secure: Boolean(tenantEmail.smtpSecure),
+          auth: {
+            user: tenantEmail.smtpUser,
+            pass: tenantEmail.smtpPassword ?? '',
+          },
+        });
+        fromAddress = tenantEmail.fromEmail
+          ? (tenantEmail.fromName ? `"${tenantEmail.fromName}" <${tenantEmail.fromEmail}>` : tenantEmail.fromEmail)
+          : this.config.getOrThrow('SMTP_FROM');
+      } else {
+        // Method 1: Platform Default SMTP (Google Workspace Starter)
+        transporter = nodemailer.createTransport({
+          host: this.config.getOrThrow('SMTP_HOST'),
+          port: Number(this.config.get('SMTP_PORT') ?? 587),
+          secure: false,
+          auth: {
+            user: this.config.getOrThrow('SMTP_USER'),
+            pass: this.config.getOrThrow('SMTP_PASSWORD'),
+          },
+        });
+        fromAddress = this.config.getOrThrow('SMTP_FROM');
+      }
+
       const result = await transporter.sendMail({
-        from: this.config.getOrThrow('SMTP_FROM'),
+        from: fromAddress,
         to,
         subject: subject ?? 'TechNova POS notification',
         html: this.emailHtml(body),
         text: this.emailText(body),
       });
+
+      if (organizationId) {
+        await this.quota.recordEmailSent(organizationId);
+      }
       return result.messageId;
     }
     if (channel === NotificationChannel.WHATSAPP) {
+      if (organizationId) {
+        if (eventType === 'SALE_COMPLETED') {
+          const check = await this.quota.canSendWhatsAppBill(organizationId);
+          if (!check.allowed) {
+            return 'SKIPPED_WHATSAPP_BILL_QUOTA_EXCEEDED';
+          }
+        } else if (eventType === 'PROMOTION_LAUNCH') {
+          await this.quota.checkWhatsAppMarketingAllowed(organizationId, 1);
+        }
+      }
       const provider = (
         this.config.get<string>('WHATSAPP_PROVIDER') ?? 'meta'
       ).toLowerCase();

@@ -1,3 +1,4 @@
+import { QuotaService } from '../subscriptions/quota.service';
 import {
   ConflictException,
   Injectable,
@@ -17,6 +18,7 @@ export class BranchesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly quota: QuotaService,
   ) {}
 
   private async organizationId(userId: string): Promise<string> {
@@ -52,6 +54,7 @@ export class BranchesService {
     context: SecurityRequestContext,
   ) {
     const organizationId = await this.organizationId(actor.id);
+    await this.quota.checkBranchCreationAllowed(organizationId);
     try {
       const branch = await this.prisma.branch.create({
         data: {

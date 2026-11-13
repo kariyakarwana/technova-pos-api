@@ -24,7 +24,7 @@ describe('NotificationsService', () => {
       ]) },
       $transaction: jest.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
     };
-    const service = new NotificationsService(prisma as unknown as PrismaService, {} as ConfigService);
+    const service = new NotificationsService(prisma as unknown as PrismaService, {} as ConfigService, { canSendEmail: jest.fn().mockResolvedValue({ allowed: true }), canSendWhatsAppBill: jest.fn().mockResolvedValue({ allowed: true }) } as any);
 
     await service.appNotifications('user-1', { page: 1, pageSize: 100, skip: 0, unread: 'true' } as never);
 
@@ -35,10 +35,7 @@ describe('NotificationsService', () => {
   });
 
   it('provides guided customer templates with company variables', () => {
-    const service = new NotificationsService(
-      {} as PrismaService,
-      {} as ConfigService,
-    );
+    const service = new NotificationsService({} as any, {} as ConfigService, { canSendEmail: jest.fn().mockResolvedValue({ allowed: true }), canSendWhatsAppBill: jest.fn().mockResolvedValue({ allowed: true }) } as any);
 
     const promotion = service
       .templateCatalog()
@@ -65,10 +62,7 @@ describe('NotificationsService', () => {
       },
       notificationTemplate: { upsert: jest.fn() },
     };
-    const service = new NotificationsService(
-      prisma as unknown as PrismaService,
-      {} as ConfigService,
-    );
+    const service = new NotificationsService(prisma as unknown as PrismaService, {} as ConfigService, { canSendEmail: jest.fn().mockResolvedValue({ allowed: true }), canSendWhatsAppBill: jest.fn().mockResolvedValue({ allowed: true }) } as any);
 
     await expect(
       service.createTemplate('user-1', {
@@ -111,10 +105,7 @@ describe('NotificationsService', () => {
             callback(transaction),
         ),
     };
-    const service = new NotificationsService(
-      prisma as unknown as PrismaService,
-      {} as ConfigService,
-    );
+    const service = new NotificationsService(prisma as unknown as PrismaService, {} as ConfigService, { canSendEmail: jest.fn().mockResolvedValue({ allowed: true }), canSendWhatsAppBill: jest.fn().mockResolvedValue({ allowed: true }) } as any);
 
     const result = await service.queueCustomerWelcome({
       organizationId: 'org-1',
@@ -190,6 +181,7 @@ describe('NotificationsService', () => {
     const service = new NotificationsService(
       prisma as unknown as PrismaService,
       config as unknown as ConfigService,
+      { canSendEmail: jest.fn().mockResolvedValue({ allowed: true }), canSendWhatsAppBill: jest.fn().mockResolvedValue({ allowed: true }) } as any,
     );
 
     const result = await service.queueEmployeeWelcomeWhatsapp({
@@ -283,6 +275,7 @@ describe('NotificationsService', () => {
     const service = new NotificationsService(
       prisma as unknown as PrismaService,
       config as unknown as ConfigService,
+      { canSendEmail: jest.fn().mockResolvedValue({ allowed: true }), canSendWhatsAppBill: jest.fn().mockResolvedValue({ allowed: true }) } as any,
     );
 
     try {

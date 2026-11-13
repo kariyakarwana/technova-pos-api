@@ -57,12 +57,7 @@ describe('UsersService', () => {
         .fn()
         .mockResolvedValue({ queued: true }),
     };
-    const service = new UsersService(
-      prisma as unknown as PrismaService,
-      audit as unknown as AuditService,
-      auth as unknown as AuthService,
-      notifications as unknown as NotificationsService,
-    );
+    const service = new UsersService(prisma as unknown as PrismaService, audit as unknown as AuditService, auth as unknown as AuthService, notifications as unknown as NotificationsService, { checkUserCreationAllowed: jest.fn().mockResolvedValue(undefined) } as any);
 
     const result = await service.create(
       {
@@ -127,6 +122,7 @@ describe('UsersService', () => {
       { record: jest.fn() } as unknown as AuditService,
       {} as AuthService,
       {} as NotificationsService,
+      { checkUserCreationAllowed: jest.fn().mockResolvedValue(undefined) } as any,
     );
 
     await expect(
@@ -171,6 +167,7 @@ describe('UsersService', () => {
       { record: jest.fn() } as unknown as AuditService,
       {} as AuthService,
       {} as NotificationsService,
+      { checkUserCreationAllowed: jest.fn().mockResolvedValue(undefined) } as any,
     );
 
     await expect(
@@ -205,6 +202,7 @@ describe('UsersService', () => {
       { record: jest.fn() } as unknown as AuditService,
       {} as AuthService,
       {} as NotificationsService,
+      { checkUserCreationAllowed: jest.fn().mockResolvedValue(undefined) } as any,
     );
 
     await expect(
@@ -236,6 +234,7 @@ describe('UsersService', () => {
       { record: jest.fn() } as unknown as AuditService,
       {} as AuthService,
       {} as NotificationsService,
+      { checkUserCreationAllowed: jest.fn().mockResolvedValue(undefined) } as any,
     );
 
     await expect(

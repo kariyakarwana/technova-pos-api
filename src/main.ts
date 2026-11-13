@@ -22,8 +22,23 @@ async function bootstrap(): Promise<void> {
   app.use(helmet());
   app.use(cookieParser());
 
+  const configuredFrontendUrl = config.getOrThrow<string>('FRONTEND_URL');
+  const publicFrontendUrl = config.get<string>('PUBLIC_FRONTEND_URL');
+  const allowedOrigins = Array.from(
+    new Set(
+      [configuredFrontendUrl, publicFrontendUrl, 'http://localhost:3000', 'http://127.0.0.1:3000']
+        .filter(Boolean)
+        .flatMap((u) => u!.split(',').map((item) => item.trim())),
+    ),
+  );
+
   app.enableCors({
-    origin: config.getOrThrow<string>('FRONTEND_URL'),
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin) || config.get('NODE_ENV') !== 'production') {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'), false);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
