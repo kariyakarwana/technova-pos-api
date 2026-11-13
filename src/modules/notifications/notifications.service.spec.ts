@@ -134,14 +134,14 @@ describe('NotificationsService', () => {
           recipient: 'nimal@example.com',
           subject: 'Your Connex Retail customer account',
           // Jest asymmetric matchers are intentionally dynamic.
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+           
           body: expect.stringContaining('TempPass!234'),
         }),
         expect.objectContaining({
           channel: NotificationChannel.WHATSAPP,
           recipient: '+94771234567',
           // Jest asymmetric matchers are intentionally dynamic.
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+           
           body: expect.stringContaining('TempPass!234'),
         }),
       ]),
