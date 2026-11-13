@@ -211,6 +211,95 @@ export class NotificationWorkerService
   private async generateOperationalAlerts() {
     await this.creditReminders();
     await this.lowStockAlerts();
+    await this.subscriptionPaymentReminders();
+  }
+
+  private async subscriptionPaymentReminders() {
+    const now = new Date();
+    const until = new Date(Date.now() + 15 * 24 * 60 * 60_000);
+    const msPerDay = 1000 * 60 * 60 * 24;
+
+    const pendingInvoices = await this.prisma.subscriptionInvoice.findMany({
+      where: {
+        dueDate: { lte: until },
+        status: { in: ['PENDING', 'OVERDUE'] },
+      },
+      include: {
+        subscription: {
+          include: {
+            organization: {
+              include: {
+                users: {
+                  include: {
+                    user: {
+                      include: {
+                        roles: {
+                          include: {
+                            role: true,
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    for (const inv of pendingInvoices) {
+      const org = inv.subscription.organization;
+      const tenantAdmins = org.users
+        .map((u) => u.user)
+        .filter((u) => u?.roles?.some((r) => r.role?.name === 'SUPER_ADMIN'));
+
+      if (!tenantAdmins.length) continue;
+
+      const diffMs = new Date(inv.dueDate).getTime() - now.getTime();
+      const days = Math.ceil(diffMs / msPerDay);
+
+      let title = `Upcoming Payment in ${days} Days`;
+      if (days < 0) {
+        title = `Subscription Payment Overdue (${Math.abs(days)} Days)`;
+      } else if (days === 0) {
+        title = 'Urgent: Subscription Payment Due Today';
+      } else if (days === 1) {
+        title = 'Urgent: Subscription Payment Due Tomorrow';
+      } else if (days <= 5) {
+        title = `Action Required: Payment Due in ${days} Days`;
+      } else if (days <= 10) {
+        title = `Upcoming Payment in ${days} Days`;
+      } else if (days <= 15) {
+        title = `Renewal Notice (${days} Days Remaining)`;
+      }
+
+      const message = `Monthly subscription invoice #${inv.invoiceNumber} ($${Number(inv.totalAmountUsd).toFixed(2)}) is awaiting payment settlement. Due on ${new Date(inv.dueDate).toLocaleDateString()}.`;
+
+      for (const admin of tenantAdmins) {
+        const existing = await this.prisma.appNotification.findFirst({
+          where: {
+            recipientUserId: admin.id,
+            eventType: 'BILLING_PAYMENT_REMINDER',
+            title,
+          },
+        });
+
+        if (!existing) {
+          await this.prisma.appNotification.create({
+            data: {
+              organizationId: org.id,
+              recipientUserId: admin.id,
+              eventType: 'BILLING_PAYMENT_REMINDER',
+              title,
+              message,
+              actionUrl: '/dashboard/billing',
+            },
+          });
+        }
+      }
+    }
   }
   private async creditReminders() {
     const now = new Date(),

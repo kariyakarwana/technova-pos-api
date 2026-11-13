@@ -1,6 +1,9 @@
+import { ConfigService } from '@nestjs/config';
+import { generateSignedResourceToken, verifySignedResourceToken } from '../../common/security/signed-token';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -28,6 +31,7 @@ export class SalesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly config: ConfigService,
   ) {}
   private async org(userId: string) {
     const m = await this.prisma.organizationUser.findFirst({
@@ -720,10 +724,15 @@ export class SalesService {
           snapshot: snapshot,
         },
       });
+      const secretKey = this.config.get<string>('JWT_SECRET') ?? 'default-technova-secret';
+      const signedToken = generateSignedResourceToken(receipt.id, organizationId, secretKey);
       return {
         saleId: sale.id,
         invoiceNumber: sale.invoiceNumber,
         receiptNumber: receipt.receiptNumber,
+        receiptId: receipt.id,
+        signedToken,
+        publicReceiptUrl: `/receipt/${receipt.id}?token=${signedToken}`,
         total,
         warrantyActivations: activatedWarranties,
       };
@@ -811,6 +820,58 @@ export class SalesService {
       discountTotal: lines.reduce((sum, line) => sum + line.discount, 0),
       taxTotal: lines.reduce((sum, line) => sum + line.tax, 0),
       total: lines.reduce((sum, line) => sum + line.total, 0),
+    };
+  }
+  async getPublicReceipt(receiptId: string, token: string) {
+    const receipt = await this.prisma.receipt.findFirst({
+      where: {
+        OR: [{ id: receiptId }, { receiptNumber: receiptId }],
+      },
+      include: {
+        sale: {
+          include: {
+            branch: {
+              include: {
+                organization: {
+                  select: {
+                    id: true,
+                    name: true,
+                    phone: true,
+                    email: true,
+                    currencyCode: true,
+                    address: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!receipt) {
+      throw new NotFoundException('Receipt not found.');
+    }
+
+    const secretKey = this.config.get<string>('JWT_SECRET') ?? 'default-technova-secret';
+    const orgId = receipt.sale.branch.organization.id;
+    const isValid = verifySignedResourceToken(receipt.id, orgId, token, secretKey);
+
+    if (!isValid) {
+      throw new ForbiddenException('Invalid or expired security verification token for this receipt.');
+    }
+
+    return {
+      receiptNumber: receipt.receiptNumber,
+      issuedAt: receipt.issuedAt,
+      snapshot: receipt.snapshot,
+      organization: receipt.sale.branch.organization,
+      branch: {
+        id: receipt.sale.branch.id,
+        name: receipt.sale.branch.name,
+        phone: receipt.sale.branch.phone,
+        address: receipt.sale.branch.address,
+      },
     };
   }
 }

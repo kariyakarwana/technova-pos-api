@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument */
+ 
 import { Injectable, Logger } from '@nestjs/common';
 import { SaleStatus } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma/prisma.service';

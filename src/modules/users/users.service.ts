@@ -1,3 +1,4 @@
+import { QuotaService } from '../subscriptions/quota.service';
 import {
   ConflictException,
   ForbiddenException,
@@ -36,6 +37,7 @@ export class UsersService {
     private readonly audit: AuditService,
     private readonly auth: AuthService,
     private readonly notifications: NotificationsService,
+    private readonly quota: QuotaService,
   ) {}
 
   private async organizationId(userId: string) {
@@ -104,6 +106,7 @@ export class UsersService {
       select: { name: true },
     });
     if (!organization) throw new NotFoundException('Organization not found.');
+    await this.quota.checkUserCreationAllowed(organizationId);
     await this.validateAssignments(
       actor,
       organizationId,

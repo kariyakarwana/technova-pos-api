@@ -20,10 +20,7 @@ describe('SalesService branch authorization', () => {
       },
       branch: { findFirst: jest.fn().mockResolvedValue(null) },
     };
-    const service = new SalesService(
-      prisma as unknown as PrismaService,
-      {} as AuditService,
-    );
+    const service = new SalesService(prisma as unknown as PrismaService, {} as AuditService, { get: () => 'test-secret' } as any);
 
     await expect(
       service.create(
@@ -53,10 +50,7 @@ describe('SalesService branch authorization', () => {
       },
       branch: { findFirst: jest.fn().mockResolvedValue(null) },
     };
-    const service = new SalesService(
-      prisma as unknown as PrismaService,
-      {} as AuditService,
-    );
+    const service = new SalesService(prisma as unknown as PrismaService, {} as AuditService, { get: () => 'test-secret' } as any);
 
     await expect(
       service.create(

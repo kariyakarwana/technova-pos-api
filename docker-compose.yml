@@ -66,7 +66,7 @@ services:
 
   ai-service:
     build:
-      context: ../technova-ai-service
+      context: ../technova-pos-ai
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
