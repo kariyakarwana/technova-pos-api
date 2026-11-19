@@ -6,14 +6,14 @@ Prepared for NxCodeWorks Engineering and QA on 18 November 2026.
 
 TechNova is a POS application being extended from a single organization with branches into a multi-organization subscription platform. NxCodeWorks administers organizations, plans, add-ons, invoices and operational oversight through /platform-admin. Each customer organization retains its own administrative dashboard and POS workflows.
 
-The prepared code is an uncommitted release candidate. Local builds and automated tests establish development evidence only. Production acceptance is not complete: the MinIO license is available only on the VPS, real integrations and a production-shaped restore rehearsal are outstanding, and the supplied audit still contains partial or absent capabilities. The separate coverage report records those gaps; they were not silently implemented.
+The code is committed on feature/saas branches. Local builds and automated tests establish development evidence only. Production acceptance remains pending: the MinIO license is available only on the VPS, real integrations and a production-shaped restore rehearsal are outstanding. The separate coverage report lists capabilities intentionally deferred from the approved V1 scope.
 
 Repository | Responsibility
 kariyakarwana/technova-pos | Next.js browser application, authentication actions, POS UI, tenant billing and platform dashboard.
 kariyakarwana/technova-pos-api | NestJS API, authorization, PostgreSQL/Prisma data model, outbox, billing, bootstrap and deployment tooling.
 kariyakarwana/technova-pos-ai | Python/FastAPI inference endpoints and model/data loading.
 
-Frontend and API work is on fix/saas-local-preview. The production/main references were fetched for this review. No merge, push, production deployment or production-secret change was performed. Preserve that distinction when handing the package to QA or the operating company.
+Frontend and API work is on feature/saas. No merge to main, production deployment or production-secret change was performed. Preserve that distinction when handing the package to QA or the operating company.
 
 ### Reading order
 
@@ -73,13 +73,13 @@ The existing catalog defines Basic, Standard, Professional and Enterprise tiers 
 
 Tenant billing reads the subscription, invoices, usage and pending requests. Owners request a plan change or add-on; the platform administrator approves or rejects it. Approval claims the pending request inside a transaction before granting entitlements. Manual settlement applies only to an unpaid invoice. A user-supplied payment reference never verifies receipt of funds.
 
-The implemented renewal worker is opt-in through BILLING_WORKER_ENABLED. It checks hourly, issues renewal invoices seven days before monthly period expiry, grants a seven-day grace period, extends recurring add-ons, handles cancellation and marks overdue billing. It is not a complete annual billing, proration, grandfathering or refund engine. Those missing commercial capabilities are listed for owner approval.
+The implemented renewal worker is opt-in through BILLING_WORKER_ENABLED. It checks hourly, issues renewal invoices seven days before monthly period expiry, grants a seven-day grace period, extends recurring add-ons and marks overdue billing. Annual billing, proration and refunds are deferred from V1.
 
 Usage periods follow monthly subscription periods and reset on renewal. Monthly add-ons expire at period end. Renewal notices are sent seven days before expiry, followed by a seven-day payment grace period. This differs from an indefinite consumable-credit ledger. Explicitly communicate the final approved policy to customers before selling packs.
 
-Message and AI usage reservations use conditional updates. Database triggers serialize quota-sensitive branch/user creation per tenant. Failure refunds exist where implemented. Concurrency, renewal and provider failure cases still require the acceptance matrix; a single successful branch-limit test is not complete concurrency certification.
+Message and AI usage reservations use conditional updates. Database triggers serialize quota-sensitive branch/user creation per tenant. The isolated integration suite verifies concurrent quota limits, settlement deduplication, durable reminder/outbox behavior and transaction rollback. Live-provider failure behavior still requires staging acceptance.
 
-Invoice subtotal, tax amount and total are stored. Some invoice line-item paths were added, but immutable invoice currency, tax rate, billing period, customer snapshot and line items are stored; a database guard prevents changes after issue, and public receipt links expire after 30 days. Avoid presenting this candidate as a finalized accounting system until those gaps are resolved.
+Issued invoices store immutable currency, tax rate, billing period, customer snapshot, line items and totals. Database guards reject edits after issue. Public receipt links expire after 30 days. Accounting reconciliation and company tax approval remain operational responsibilities.
 
 ## Storage messaging and AI operations
 
@@ -89,9 +89,9 @@ Production mounts /etc/technova/minio.license read-only, persists minio_data and
 
 ### Email and WhatsApp
 
-The notification worker runs delivery processing every 30 seconds and operational alerts hourly when enabled. Outbox records and delivery attempts support investigation. Quota rejection must not be treated as a provider message ID. After provider acceptance followed by persistence failure, reconcile with the provider before retrying to avoid duplicate customer messages.
+The notification worker runs delivery processing every 30 seconds and operational alerts hourly when enabled. Durable outbox records and delivery attempts support investigation. Quota rejection must not be treated as a provider message ID. After provider acceptance followed by persistence failure, reconcile with the provider before retrying to avoid duplicate customer messages.
 
-Platform SMTP is the supported operational baseline. Tenant-custom SMTP and cloud-provider management are incomplete: encrypted credential management, host validation, management screens and a complete cloud adapter are not ready. Do not advertise these capabilities as available. The local Mailpit inbox only proves application email generation, not production delivery.
+Platform-managed SMTP is the approved V1 baseline; its settings remain editable in the VPS environment file. Tenant-owned SMTP and cloud mail adapters are deferred. Local Mailpit checks prove delivery to a test inbox, not production delivery.
 
 ### AI
 
@@ -143,6 +143,6 @@ Integrations | Licensed MinIO, private bucket denial, real SMTP and WhatsApp del
 Operations | Named operator, secret ownership, backup schedule/retention, monitoring and tested rollback decision.
 Commercial scope | Approved prices, taxes, billing periods, add-on expiry, payment model and explicit deferred features.
 
-Local evidence currently includes 94 API tests and 77 frontend tests from the preview phase, successful local migrations, owner/tenant login and billing checks, suspension recovery and a branch-cap rejection. New dependency changes and bootstrap additions require the current release validation record in this package; use that record rather than assuming old test results cover a changed build.
+Local evidence includes 100 API tests and 79 frontend tests, successful local migrations and eight V1 integration checks. New dependency changes and bootstrap additions require the current release validation record in this package; use that record rather than assuming old test results cover a changed build.
 
 Regenerate API documents after controller/DTO changes, run regression tests for affected domains, and deploy only owner-authorized current-main images. Do not run the demo seed against production or copy local preview passwords into company accounts. Keep unresolved items visible until their acceptance evidence is recorded.

@@ -87,7 +87,7 @@ Submit /subscription/plan-change-request with targetPlanCode or /subscription/ad
 
 POST /subscription/invoices/{id}/pay-online is deliberately disabled and currently rejects with 400; no payment gateway is integrated. This differs from the supplied audit's suggested 404/405 result. A bank reference is a claim, not proof that money arrived. The platform owner must verify payment independently before recording settlement.
 
-Exercise expiry and cancellation using a controlled test clock/database fixture. The current renewal worker runs hourly and advances monthly subscription periods; usage counters reset by UTC calendar month. Test one-time add-on expiry at the month boundary, recurring add-on renewal, no-subscription access and a downgrade below actual branch/user counts. Commercial-policy differences are listed in the coverage report.
+Exercise expiry and cancellation using a controlled test clock/database fixture. V1 uses monthly periods, a seven-day advance invoice and a seven-day grace period; quota resets at renewal. Test unused add-on expiry at period end, recurring add-on renewal, no-subscription access and a downgrade below actual branch/user counts. Commercial-policy differences are listed in the coverage report.
 
 At a quota boundary, send concurrent AI and message operations. Assert that reserved usage does not exceed the limit and that failed operations release reservations where implemented. Confirm that quota-blocked messages are not marked SENT. Provider acceptance followed by database failure requires reconciliation instead of blind resending.
 

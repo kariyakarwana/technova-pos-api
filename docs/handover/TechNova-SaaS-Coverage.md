@@ -8,11 +8,11 @@ The supplied technova-saas.pdf is a 13-page remediation audit of frontend PR 118
 
 Do not treat the current candidate as fully production-ready. Several core security defects were corrected, and production-stack configuration plus a controlled bootstrap are prepared. Missing capabilities below have not been added without owner approval. The table distinguishes local implementation from staging or production proof.
 
-The PDF contains some implementation-specific claims that do not exactly match current source. For example, it names a local cleanup commit that was not established by this review; the actual work here is uncommitted. Current Prisma names are Plan, Subscription and related mapped tables, rather than every example name in the PDF. This report follows inspected code and verified tool results.
+The source audit describes the original PR code. This report reflects the final V1 candidate and the approved scope decisions; it does not claim production deployment or live-provider acceptance.
 
-### Missing or incomplete capabilities to approve
+### Capabilities deferred from approved V1
 
-Dedicated billing permissions; real online payment gateway; bank-slip file upload; advance renewal/grace policy; annual billing, proration, refunds and price grandfathering; independent carry-forward add-on credits; complete immutable invoice snapshots; encrypted tenant-managed email and cloud adapters; automatic durable email reminders; complete signed-receipt delivery; large-scale server pagination and full privileged auditing.
+Real online payment gateway and bank-slip upload; annual billing, proration, refunds and price grandfathering; organization switching; tenant-owned SMTP and cloud mail adapters; and an independent carry-forward credit ledger.
 
 No organization switcher is implemented. Current access assumes one organization per internal account. This is a product choice, not an authorization to add multi-business accounts.
 
@@ -52,66 +52,67 @@ F08  Suspension and expiry
 PDF page 6 | Implemented with differences
 Protected APIs are denied; login/billing recovery remain accessible. PDF suggests rejecting login. Offline cached data is not remotely erased.
 F09  Billing permissions
-PDF page 6 to 7 | Partial match
-Uses settings:manage rather than separate billing:view and billing:manage permission keys. Dedicated billing permissions are not added.
+PDF page 6 to 7 | Implemented
+Dedicated billing:view and billing:manage permissions separate billing access from general settings changes.
 F10  Request validation
 PDF page 7 | Implemented
 Plan and add-on requests use validated DTOs with bounded strings and integer quantities. QA should test unknown properties and invalid quantities.
 F11  Recurring lifecycle
-PDF page 7 | Partial
-Hourly opt-in worker renews 30-day periods and handles overdue/cancelled status. PDF proposes advance invoices/grace rules; annual/prorated billing is absent.
+PDF page 7 | Implemented for V1
+Monthly periods, renewal invoices seven days before expiry, seven-day grace and monthly quota resets. Annual billing, proration and refunds are deferred.
 F12  One-time add-on permanence
-PDF page 7 to 8 | Partial
-Expiry prevents permanent allowance. Current policy expires at UTC month end; no independent carry-forward consumable-credit ledger.
+PDF page 7 to 8 | Implemented for V1
+Unused add-on units expire at the subscription period end; an independent carry-forward credit ledger is deferred.
 
 ## Finding coverage 13 to 18
 
 Finding and PDF page | Current status and evidence
 F13  Quota races
-PDF page 8 | Implemented pending full stress test
-Conditional AI/message reservations and database branch/user caps added. Local cap rejection passed; full concurrent provider/renewal tests remain.
+PDF page 8 | Implemented and integration-tested
+Conditional AI/message reservations and database branch/user caps prevent concurrent usage from exceeding limits.
 F14  Duplicate approvals
-PDF page 8 | Implemented pending race coverage
-Conditional transactional request claims and unpaid-invoice settlement prevent repeated effects. Sequential duplicate tests passed; concurrent error normalization still needs verification.
+PDF page 8 | Implemented and integration-tested
+Transactional request claims and idempotent manual settlement allow only one effective approval or payment.
 F15  Invoice pricing and tax snapshots
-PDF page 8 to 9 | Partial
-Amounts and some line items stored, plan VAT used on add-on approval. Complete immutable rate/currency/period snapshots and consistent PDF details remain incomplete.
+PDF page 8 to 9 | Implemented
+Issued invoices snapshot customer, currency, tax rate, period, line items and totals; database guards reject edits after issue.
 F16  Public receipt signing
-PDF page 9 | Implemented with differences
-Independent required secret and versioned expiry/tamper validation added. Current default expiry is 90 days; PDF calls for 30 days.
+PDF page 9 | Implemented
+Required signing secret, tamper/expiry checks and 30-day public receipt-link expiry.
 F17  Receipt totals
-PDF page 9 to 10 | Implemented pending end to end QA
-Top-level snapshot totals, zero values, paid amount and balance corrected. Automatic signed-link distribution through delivery channels remains incomplete.
+PDF page 9 to 10 | Implemented
+Stored totals and signed receipt URLs are delivered through a durable email outbox with deduplication.
 F18  Undelivered marked sent
-PDF page 10 | Implemented pending provider tests
-Quota failures throw; provider acceptance followed by persistence failure requires reconciliation. Real delivery and ambiguous network outcomes require provider testing.
+PDF page 10 | Implemented; live provider acceptance remains
+Quota failures throw and outbox state records delivery attempts; production SMTP delivery still requires staging verification.
 
 ## Finding coverage 19 to 22
 
 Finding and PDF page | Current status and evidence
 F19  Tenant SMTP secrets
-PDF page 10 | Not complete
-Encrypted tenant credential management, host validation and UI are absent. Cloud provider is unsupported. Keep production scope on platform-managed SMTP.
+PDF page 10 | Deferred by approved V1 scope
+V1 uses platform-managed SMTP from the VPS environment file; tenant-owned SMTP and cloud mail adapters are deferred.
 F20  Fictional successful billing data
 PDF page 10 | Fixed locally
 Removed invented Enterprise data and empty-success fallbacks; explicit error/retry views added.
 F21  Reminder deduplication
-PDF page 11 | Partial
-Invoice number included in in-app lookup; no unified durable invoice/stage/recipient email key and scheduler. Automatic email reminders are not complete.
+PDF page 11 | Implemented
+Durable invoice/stage/recipient reminder deduplication with seven-day advance notices and seven-day grace rules.
 F22  Scale and review hygiene
-PDF page 11 | Partial
-Accidental tatus file removed. Server pagination, bounded tenant aggregation and complete privileged-mutation auditing remain incomplete.
+PDF page 11 | Implemented
+Paginated organization, invoice, audit and request reads, bounded aggregation and body-free privileged-mutation audit events.
 
-## Acceptance differences requiring a decision
+## Approved V1 acceptance policy
 
-Question | Current implementation
-Payment model | Manual platform settlement exists. Online settlement is disabled; no real gateway or receipt-file upload.
-Quota reset | Monthly subscription period; usage resets at renewal.
-One-time packs | Expire at the next UTC month boundary; no indefinite carry-forward balance.
-Suspension | Protected POS requests blocked; billing recovery allowed. No read-only tenant mode.
-Business membership | Ambiguous multi-organization users rejected; no organization switcher.
+Question | V1 policy
+Payment model | Manual platform settlement only. Online settlement is disabled; no gateway or bank-slip upload.
+Billing period | Monthly subscription periods; renewal invoice seven days before expiry; seven-day grace period.
+Quota reset | Usage resets on monthly subscription renewal.
+Unused add-ons | Expire at the subscription period end; no carry-forward credit ledger.
+Suspension | Protected POS requests blocked; billing recovery allowed.
+Business membership | One organization per internal account; no organization switcher.
 Receipt expiry | 30 days.
 
-The ten acceptance cases on PDF page 12 still require staging evidence. Local tests support parts of authorization, tenant isolation, duplicate billing, quota rejection, signed-token behavior and explicit UI errors, but do not constitute the full acceptance matrix. In particular, record concurrent quota tests, restored production-shaped data and real signed receipt totals.
+Automated local evidence includes eight integration checks for billing deduplication, immutable invoices, grace expiry, settlement races, quotas, outbox rollback/deduplication, S3-compatible storage and local SMTP. Production-shaped restore, licensed MinIO, real provider delivery, AI inference and full acceptance on staging remain required.
 
-The PDF recommends force-pushing and rotating credentials. Those statements are source recommendations, not instructions acted on here. No force push, remote secret rotation or production mutation was performed. Any exposure response should be based on whether affected builds actually ran and which credentials they could access.
+No merge to main or production deployment was performed. The owner merge remains the authorized deployment trigger.
