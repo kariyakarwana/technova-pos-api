@@ -1,5 +1,7 @@
+import { PaginationDto } from '../../common/dto/pagination.dto';
 import {
   Body,
+  Query,
   Controller,
   Get,
   NotFoundException,
@@ -8,6 +10,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
+import { RequirePermissions } from '../../common/auth/permissions.decorator';
+import { PlanChangeRequestDto, AddonRequestDto } from './subscription.dto';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
@@ -18,6 +22,7 @@ import { SubscriptionsService } from './subscriptions.service';
 
 @Controller('subscription')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermissions('billing:view')
 export class SubscriptionsController {
   constructor(
     private readonly subscriptions: SubscriptionsService,
@@ -58,24 +63,26 @@ export class SubscriptionsController {
   }
 
   @Get('invoices')
-  async getInvoices(@CurrentUser() user: AuthenticatedUser) {
+  async getInvoices(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationDto) {
     const organizationId = await this.getOrganizationId(user.id);
-    return this.subscriptions.getInvoices(organizationId);
+    return this.subscriptions.getInvoices(organizationId, query);
   }
 
+  @RequirePermissions('billing:manage')
   @Post('plan-change-request')
   async requestPlanChange(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() body: { targetPlanCode: string; notes?: string; paymentRef?: string },
+    @Body() body: PlanChangeRequestDto,
   ) {
     const organizationId = await this.getOrganizationId(user.id);
     return this.subscriptions.requestPlanChange(organizationId, user.id, body);
   }
 
+  @RequirePermissions('billing:manage')
   @Post('addons')
   async requestAddon(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() body: { type: string; quantity?: number; notes?: string; paymentRef?: string },
+    @Body() body: AddonRequestDto,
   ) {
     const organizationId = await this.getOrganizationId(user.id);
     return this.subscriptions.requestAddon(
@@ -90,6 +97,7 @@ export class SubscriptionsController {
     );
   }
 
+  @RequirePermissions('billing:manage')
   @Post('invoices/:id/pay-online')
   async payInvoiceOnline(
     @CurrentUser() user: AuthenticatedUser,

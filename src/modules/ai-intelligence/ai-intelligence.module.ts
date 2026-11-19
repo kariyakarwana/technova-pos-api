@@ -1,3 +1,4 @@
+import { AiQuotaInterceptor } from './ai-quota.interceptor';
 import { Module, forwardRef } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { SalesDataExtractionService } from './sales-forecasting/sales-data-extraction.service';
@@ -11,6 +12,7 @@ import { DemandDataExtractionService } from './demand-data-extraction.service';
   imports: [AuthModule, forwardRef(() => BusinessAssistantModule)],
   controllers: [AiIntelligenceController],
   providers: [
+    AiQuotaInterceptor,
     AiIntelligenceService,
     SalesDataExtractionService,
     DemandDataExtractionService,

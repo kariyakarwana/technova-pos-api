@@ -1,3 +1,4 @@
+import { hasSubscriptionAccess } from './billing-policy';
 import {
   ForbiddenException,
   Injectable,
@@ -72,6 +73,25 @@ export class QuotaService {
     private readonly config: ConfigService,
   ) {}
 
+  /** Atomically reserve one billable operation before contacting a provider. */
+  async reserveUsage(organizationId: string, metric: 'emailsSent' | 'whatsAppBillsSent' | 'whatsAppMarketingSent' | 'aiRequestsUsed') {
+    const limits = await this.getEffectiveLimits(organizationId);
+    const settings = {
+      emailsSent: [limits.emailEnabled, limits.monthlyEmailLimit],
+      whatsAppBillsSent: [limits.whatsAppBillsEnabled, limits.monthlyWhatsAppBills],
+      whatsAppMarketingSent: [limits.whatsAppMarketingEnabled, limits.monthlyWhatsAppMarketing],
+      aiRequestsUsed: [limits.aiEnabled, limits.monthlyAiRequests],
+    } as const;
+    const [enabled, limit] = settings[metric];
+    if (!enabled || limit <= 0) throw new ForbiddenException('This feature is not included in the subscription.');
+    const usage = await this.getOrCreateCurrentUsage(organizationId);
+    const reserved = await this.prisma.subscriptionUsage.updateMany({ where: { id: usage.id, [metric]: { lt: limit } }, data: { [metric]: { increment: 1 } } });
+    if (reserved.count !== 1) throw new ForbiddenException('Monthly allowance exhausted.');
+    return async () => {
+      await this.prisma.subscriptionUsage.updateMany({ where: { id: usage.id, [metric]: { gt: 0 } }, data: { [metric]: { decrement: 1 } } });
+    };
+  }
+
   private parseFeatures(
     raw: unknown,
     source: 'PLAN' | 'ADDON',
@@ -126,11 +146,12 @@ export class QuotaService {
    * Retrieves the organization's active subscription and calculates
    * effective limits including plan baselines + paid add-on packs.
    */
-  async getEffectiveLimits(organizationId: string): Promise<EffectivePlanLimits> {
+  async getEffectiveLimits(organizationId: string, allowInactive = false): Promise<EffectivePlanLimits> {
     const subscription = await this.prisma.subscription.findUnique({
       where: { organizationId },
       include: {
         plan: true,
+        invoices: { where: { status: { in: ['PENDING', 'OVERDUE'] }, dueDate: { lte: new Date() } }, select: { id: true }, take: 1 },
         addons: {
           where: { isActive: true },
           include: { addonPack: true },
@@ -138,36 +159,17 @@ export class QuotaService {
       },
     });
 
-    if (!subscription || !subscription.plan) {
-      // Fallback: If no subscription exists yet, fetch ENTERPRISE baseline so operations do not break
-      const enterprise = await this.prisma.plan.findUnique({
-        where: { code: 'ENTERPRISE' },
-      });
-      if (enterprise) {
-        return {
-          planName: enterprise.name,
-          planTier: enterprise.tier,
-          priceUsd: Number(enterprise.priceUsd),
-          priceWithVatUsd: Number(enterprise.priceWithVatUsd),
-          maxBranches: enterprise.maxBranches,
-          maxInternalUsers: enterprise.maxInternalUsers,
-          monthlyEmailLimit: enterprise.monthlyEmailLimit,
-          monthlyWhatsAppBills: enterprise.monthlyWhatsAppBills,
-          monthlyWhatsAppMarketing: enterprise.monthlyWhatsAppMarketing,
-          monthlyAiRequests: enterprise.monthlyAiRequests,
-          multiBranchEnabled: enterprise.multiBranchEnabled,
-          emailEnabled: enterprise.emailEnabled,
-          whatsAppBillsEnabled: enterprise.whatsAppBillsEnabled,
-          whatsAppMarketingEnabled: enterprise.whatsAppMarketingEnabled,
-          aiEnabled: enterprise.aiEnabled,
-          features: this.parseFeatures(enterprise.features, 'PLAN'),
-        };
-      }
-      throw new NotFoundException(
-        `No subscription found for organization: ${organizationId}`,
-      );
+    if (!subscription || !subscription.plan) throw new NotFoundException('No subscription is assigned to this organization.');
+    const organization = await this.prisma.organization.findUnique({ where: { id: organizationId } });
+    if (!allowInactive && (organization?.status !== 'ACTIVE' || !hasSubscriptionAccess(subscription))) {
+      throw new ForbiddenException('The organization subscription is inactive or expired.');
     }
-
+    const extras = { BRANCHES: 0, EMAILS: 0, WHATSAPP_BILLS: 0, WHATSAPP_MARKETING: 0, AI_REQUESTS: 0, CUSTOM_FEATURE: 0 };
+    subscription.addons = subscription.addons.filter(addon => !addon.expiresAt || addon.expiresAt > new Date());
+    for (const addon of subscription.addons) {
+      const target = addon.addonPack?.quotaTarget;
+      if (target) extras[target] += addon.grantedUnits;
+    }
     const { plan } = subscription;
     const planFeatures = this.parseFeatures(plan.features, 'PLAN');
     const addonFeatures: PackageFeatureItem[] = [];
@@ -182,17 +184,17 @@ export class QuotaService {
       planTier: plan.tier,
       priceUsd: Number(plan.priceUsd),
       priceWithVatUsd: Number(plan.priceWithVatUsd),
-      maxBranches: plan.maxBranches + subscription.extraBranches,
+      maxBranches: plan.maxBranches + extras.BRANCHES,
       maxInternalUsers: plan.maxInternalUsers,
-      monthlyEmailLimit: plan.monthlyEmailLimit + subscription.extraEmailLimit,
-      monthlyWhatsAppBills: plan.monthlyWhatsAppBills + subscription.extraWhatsAppBills,
-      monthlyWhatsAppMarketing: plan.monthlyWhatsAppMarketing + subscription.extraWhatsAppMarketing,
-      monthlyAiRequests: plan.monthlyAiRequests + subscription.extraAiRequests,
-      multiBranchEnabled: plan.multiBranchEnabled || subscription.extraBranches > 0,
-      emailEnabled: plan.emailEnabled || subscription.extraEmailLimit > 0,
-      whatsAppBillsEnabled: plan.whatsAppBillsEnabled || subscription.extraWhatsAppBills > 0,
-      whatsAppMarketingEnabled: plan.whatsAppMarketingEnabled || subscription.extraWhatsAppMarketing > 0,
-      aiEnabled: plan.aiEnabled || subscription.extraAiRequests > 0,
+      monthlyEmailLimit: plan.monthlyEmailLimit + extras.EMAILS,
+      monthlyWhatsAppBills: plan.monthlyWhatsAppBills + extras.WHATSAPP_BILLS,
+      monthlyWhatsAppMarketing: plan.monthlyWhatsAppMarketing + extras.WHATSAPP_MARKETING,
+      monthlyAiRequests: plan.monthlyAiRequests + extras.AI_REQUESTS,
+      multiBranchEnabled: plan.multiBranchEnabled || extras.BRANCHES > 0,
+      emailEnabled: plan.emailEnabled || extras.EMAILS > 0,
+      whatsAppBillsEnabled: plan.whatsAppBillsEnabled || extras.WHATSAPP_BILLS > 0,
+      whatsAppMarketingEnabled: plan.whatsAppMarketingEnabled || extras.WHATSAPP_MARKETING > 0,
+      aiEnabled: plan.aiEnabled || extras.AI_REQUESTS > 0,
       features: this.mergeFeatureLists(planFeatures, addonFeatures),
     };
   }
@@ -206,27 +208,15 @@ export class QuotaService {
   }
 
   /**
-   * Retrieves or initializes the current calendar month usage record for a tenant.
+   * Retrieves or initializes the current subscription-period usage record for a tenant.
    */
   async getOrCreateCurrentUsage(organizationId: string) {
-    const now = new Date();
-    const periodYear = now.getUTCFullYear();
-    const periodMonth = now.getUTCMonth() + 1;
-
-    return this.prisma.organizationUsage.upsert({
-      where: {
-        organizationId_periodYear_periodMonth: {
-          organizationId,
-          periodYear,
-          periodMonth,
-        },
-      },
+    const sub = await this.prisma.subscription.findUnique({ where: { organizationId } });
+    if (!sub) throw new NotFoundException('No subscription is assigned to this organization.');
+    return this.prisma.subscriptionUsage.upsert({
+      where: { organizationId_periodStart: { organizationId, periodStart: sub.currentPeriodStart } },
       update: {},
-      create: {
-        organizationId,
-        periodYear,
-        periodMonth,
-      },
+      create: { organizationId, periodStart: sub.currentPeriodStart, periodEnd: sub.currentPeriodEnd },
     });
   }
 
@@ -297,28 +287,8 @@ export class QuotaService {
    * Increments the WhatsApp bill count.
    */
   async recordWhatsAppBillSent(organizationId: string): Promise<void> {
-    const now = new Date();
-    const periodYear = now.getUTCFullYear();
-    const periodMonth = now.getUTCMonth() + 1;
-
-    await this.prisma.organizationUsage.upsert({
-      where: {
-        organizationId_periodYear_periodMonth: {
-          organizationId,
-          periodYear,
-          periodMonth,
-        },
-      },
-      update: {
-        whatsAppBillsSent: { increment: 1 },
-      },
-      create: {
-        organizationId,
-        periodYear,
-        periodMonth,
-        whatsAppBillsSent: 1,
-      },
-    });
+    const usage = await this.getOrCreateCurrentUsage(organizationId);
+    await this.prisma.subscriptionUsage.update({ where: { id: usage.id }, data: { whatsAppBillsSent: { increment: 1 } } });
   }
 
   /**
@@ -351,28 +321,8 @@ export class QuotaService {
     organizationId: string,
     count: number,
   ): Promise<void> {
-    const now = new Date();
-    const periodYear = now.getUTCFullYear();
-    const periodMonth = now.getUTCMonth() + 1;
-
-    await this.prisma.organizationUsage.upsert({
-      where: {
-        organizationId_periodYear_periodMonth: {
-          organizationId,
-          periodYear,
-          periodMonth,
-        },
-      },
-      update: {
-        whatsAppMarketingSent: { increment: count },
-      },
-      create: {
-        organizationId,
-        periodYear,
-        periodMonth,
-        whatsAppMarketingSent: count,
-      },
-    });
+    const usage = await this.getOrCreateCurrentUsage(organizationId);
+    await this.prisma.subscriptionUsage.update({ where: { id: usage.id }, data: { whatsAppMarketingSent: { increment: count } } });
   }
 
   /**
@@ -408,28 +358,8 @@ export class QuotaService {
    * Increments sent emails count.
    */
   async recordEmailSent(organizationId: string): Promise<void> {
-    const now = new Date();
-    const periodYear = now.getUTCFullYear();
-    const periodMonth = now.getUTCMonth() + 1;
-
-    await this.prisma.organizationUsage.upsert({
-      where: {
-        organizationId_periodYear_periodMonth: {
-          organizationId,
-          periodYear,
-          periodMonth,
-        },
-      },
-      update: {
-        emailsSent: { increment: 1 },
-      },
-      create: {
-        organizationId,
-        periodYear,
-        periodMonth,
-        emailsSent: 1,
-      },
-    });
+    const usage = await this.getOrCreateCurrentUsage(organizationId);
+    await this.prisma.subscriptionUsage.update({ where: { id: usage.id }, data: { emailsSent: { increment: 1 } } });
   }
 
   /**
@@ -455,35 +385,15 @@ export class QuotaService {
    * Increments AI requests count.
    */
   async recordAiRequestUsed(organizationId: string): Promise<void> {
-    const now = new Date();
-    const periodYear = now.getUTCFullYear();
-    const periodMonth = now.getUTCMonth() + 1;
-
-    await this.prisma.organizationUsage.upsert({
-      where: {
-        organizationId_periodYear_periodMonth: {
-          organizationId,
-          periodYear,
-          periodMonth,
-        },
-      },
-      update: {
-        aiRequestsUsed: { increment: 1 },
-      },
-      create: {
-        organizationId,
-        periodYear,
-        periodMonth,
-        aiRequestsUsed: 1,
-      },
-    });
+    const usage = await this.getOrCreateCurrentUsage(organizationId);
+    await this.prisma.subscriptionUsage.update({ where: { id: usage.id }, data: { aiRequestsUsed: { increment: 1 } } });
   }
 
   /**
    * Compiles the full usage dashboard for the tenant or platform admin.
    */
   async getUsageOverview(organizationId: string): Promise<UsageOverview> {
-    const limits = await this.getEffectiveLimits(organizationId);
+    const limits = await this.getEffectiveLimits(organizationId, true);
     const usage = await this.getOrCreateCurrentUsage(organizationId);
 
     const subscription = await this.prisma.subscription.findUnique({

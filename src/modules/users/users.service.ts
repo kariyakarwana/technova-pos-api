@@ -344,6 +344,7 @@ export class UsersService {
         select: {
           id: true,
           name: true,
+          scope: true,
           permissions: { select: { permission: { select: { key: true } } } },
         },
       }),
@@ -351,6 +352,9 @@ export class UsersService {
         where: { id: { in: branchIds }, organizationId },
       }),
     ]);
+    if (roles.some(role => role.name === 'PLATFORM_SUPER_ADMIN' || (role.scope !== 'GLOBAL' && role.scope !== organizationId))) {
+      throw new ForbiddenException('Platform and other-tenant roles cannot be assigned here.');
+    }
     if (roles.length !== roleIds.length || branchCount !== branchIds.length)
       throw new ConflictException(
         'One or more role or branch assignments are invalid.',

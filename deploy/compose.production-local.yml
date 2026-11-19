@@ -1,0 +1,27 @@
+# Local build override for the real production stack. Use production.env.example
+# filled with LOCAL credentials and a licensed local MinIO installation.
+# Do not point this stack at the production database or storage volumes.
+name: technova-production-rehearsal
+services:
+  backend:
+    build: { context: .., target: runtime }
+    image: technova-api-rehearsal:local
+  migrate:
+    build: { context: .., target: build }
+    image: technova-api-migrate-rehearsal:local
+  frontend:
+    build:
+      context: ../../technova-pos
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Local API URL is required}
+    image: technova-frontend-rehearsal:local
+  ai-service:
+    build: { context: ../../technova-pos-ai }
+    image: technova-ai-rehearsal:local
+    volumes:
+      - ${LOCAL_AI_ARTIFACTS:?Set an absolute local artifacts directory}:/app/artifacts:ro
+      - ${LOCAL_AI_PROCESSED_DATA:?Set an absolute local processed-data directory}:/app/data/processed:ro
+  minio:
+    volumes:
+      - minio_data:/data
+      - ${MINIO_LICENSE_PATH:?Set the local MinIO license path}:/minio.license:ro

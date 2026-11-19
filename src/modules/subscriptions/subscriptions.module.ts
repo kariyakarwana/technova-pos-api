@@ -1,3 +1,4 @@
+import { BillingLifecycleService } from './billing-lifecycle.service';
 import { Global, Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
@@ -9,7 +10,7 @@ import { SubscriptionsService } from './subscriptions.service';
 @Module({
   imports: [AuthModule],
   controllers: [SubscriptionsController],
-  providers: [QuotaService, SubscriptionsService],
-  exports: [QuotaService, SubscriptionsService],
+  providers: [QuotaService, SubscriptionsService, BillingLifecycleService],
+  exports: [QuotaService, SubscriptionsService, BillingLifecycleService],
 })
 export class SubscriptionsModule {}

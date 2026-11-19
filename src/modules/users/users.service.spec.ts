@@ -25,7 +25,7 @@ describe('UsersService', () => {
         findMany: jest
           .fn()
           .mockResolvedValue([
-            { id: 'role-1', name: 'CASHIER', permissions: [] },
+            { id: 'role-1', name: 'CASHIER', scope: 'GLOBAL', permissions: [] },
           ]),
       },
       branch: { count: jest.fn().mockResolvedValue(1) },

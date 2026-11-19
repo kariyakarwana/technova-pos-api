@@ -1,3 +1,4 @@
+import { QuotaService } from '../subscriptions/quota.service';
  
 import {
   BadGatewayException,
@@ -43,6 +44,7 @@ export class AiIntelligenceService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly quota: QuotaService,
     config: ConfigService,
     private readonly salesDataExtraction: SalesDataExtractionService,
     private readonly demandDataExtraction: DemandDataExtractionService,

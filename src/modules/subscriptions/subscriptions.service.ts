@@ -1,3 +1,5 @@
+import { invoiceSnapshot } from './invoice-snapshot';
+import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
 import {
   BadRequestException,
   ConflictException,
@@ -75,7 +77,7 @@ export class SubscriptionsService {
         },
         invoices: {
           orderBy: { issuedDate: 'desc' },
-          take: 12,
+          take: 20,
         },
       },
     });
@@ -97,6 +99,7 @@ export class SubscriptionsService {
 
     return {
       subscription,
+      invoicePagination: { page: 1, pageSize: 20, total: await this.prisma.subscriptionInvoice.count({ where: { subscriptionId: subscription.id } }) },
       usageOverview,
       availablePlans,
       availableAddonPacks,
@@ -107,7 +110,7 @@ export class SubscriptionsService {
   /**
    * Returns invoices for the tenant.
    */
-  async getInvoices(organizationId: string) {
+  async getInvoices(organizationId: string, query: PaginationDto = new PaginationDto()) {
     const subscription = await this.prisma.subscription.findUnique({
       where: { organizationId },
       select: { id: true },
@@ -117,10 +120,12 @@ export class SubscriptionsService {
       throw new NotFoundException('Subscription not found.');
     }
 
-    return this.prisma.subscriptionInvoice.findMany({
+    const invoices = await this.prisma.subscriptionInvoice.findMany({
+      skip: query.skip, take: query.pageSize,
       where: { subscriptionId: subscription.id },
       orderBy: { issuedDate: 'desc' },
     });
+    return paginate(invoices, await this.prisma.subscriptionInvoice.count({ where: { subscriptionId: subscription.id } }), query);
   }
 
   /**
@@ -148,6 +153,7 @@ export class SubscriptionsService {
     return this.prisma.subscriptionInvoice.create({
       data: {
         subscriptionId,
+        ...await invoiceSnapshot(this.prisma, subscriptionId, undefined, undefined, subscription.plan),
         invoiceNumber,
         subtotalUsd: subtotal,
         vatAmountUsd: vatAmount,
@@ -285,61 +291,7 @@ export class SubscriptionsService {
       gatewayRef?: string;
     },
   ) {
-    const invoice = await this.prisma.subscriptionInvoice.findUnique({
-      where: { id: invoiceId },
-      include: {
-        subscription: {
-          include: {
-            organization: true,
-            plan: true,
-          },
-        },
-      },
-    });
-
-    if (!invoice || invoice.subscription.organizationId !== organizationId) {
-      throw new NotFoundException('Subscription invoice not found.');
-    }
-
-    if (invoice.status === 'PAID') {
-      throw new BadRequestException('This invoice has already been paid.');
-    }
-
-    const resolvedMethod = dto.paymentMethod || 'ONLINE_GATEWAY';
-    const txnRef =
-      dto.gatewayRef?.trim() ||
-      `TXN-ONL-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-    const paidNow = new Date();
-    const updatedInvoice = await this.prisma.$transaction(async (tx) => {
-      const inv = await tx.subscriptionInvoice.update({
-        where: { id: invoiceId },
-        data: {
-          status: 'PAID',
-          paidAt: paidNow,
-          paymentMethod: resolvedMethod,
-          paymentRef: txnRef,
-          notes: dto.cardLast4
-            ? `Paid via Online Payment Gateway (${dto.cardBrand || 'Card'} ending in ${dto.cardLast4})`
-            : `Paid via Online Payment Gateway (${resolvedMethod})`,
-        },
-      });
-
-      // Keep subscription active
-      await tx.subscription.update({
-        where: { id: invoice.subscriptionId },
-        data: {
-          status: 'ACTIVE',
-        },
-      });
-
-      return inv;
-    });
-
-    return {
-      message: `Invoice ${invoice.invoiceNumber} successfully paid via Online Gateway.`,
-      transactionReference: txnRef,
-      invoice: updatedInvoice,
-    };
+    void organizationId; void invoiceId; void dto;
+    throw new BadRequestException('Online payment is unavailable. Contact NxCodeWorks to arrange verified manual payment.');
   }
 }

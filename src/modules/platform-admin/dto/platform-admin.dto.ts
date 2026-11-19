@@ -106,6 +106,7 @@ export class AllocateAddonDto {
 export class RecordPaymentDto {
   @IsString()
   @IsNotEmpty()
+  @IsIn(['BANK_TRANSFER', 'CASH', 'CHEQUE'])
   paymentMethod: string; // e.g. "BANK_TRANSFER", "CASH"
 
   @IsString()
@@ -225,7 +226,7 @@ export class CreatePlanDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['MONTHLY', 'ANNUAL'])
+  @IsIn(['MONTHLY'])
   billingCycle?: string;
 
   @IsOptional()
@@ -305,7 +306,7 @@ export class UpdatePlanDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['MONTHLY', 'ANNUAL'])
+  @IsIn(['MONTHLY'])
   billingCycle?: string;
 
   @IsOptional()

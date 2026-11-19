@@ -251,7 +251,7 @@ export class SuppliersService {
       },
     });
     const role = await tx.role.upsert({
-      where: { name: 'SUPPLIER' },
+      where: { scope_name: { scope: 'GLOBAL', name: 'SUPPLIER' } },
       update: { description: 'External supplier portal user', isSystem: true },
       create: {
         name: 'SUPPLIER',

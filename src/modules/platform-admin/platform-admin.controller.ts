@@ -1,5 +1,9 @@
+import { PaginationDto } from '../../common/dto/pagination.dto';
+import { PlatformAuditInterceptor } from './platform-audit.interceptor';
 import {
   Body,
+  Query,
+  UseInterceptors,
   Controller,
   Get,
   Param,
@@ -32,6 +36,7 @@ import { PlatformAdminGuard } from './guards/platform-admin.guard';
 import { PlatformAdminService } from './platform-admin.service';
 
 @Controller('platform-admin')
+@UseInterceptors(PlatformAuditInterceptor)
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
 export class PlatformAdminController {
   constructor(private readonly platformAdmin: PlatformAdminService) {}
@@ -42,18 +47,18 @@ export class PlatformAdminController {
   }
 
   @Get('organizations')
-  listOrganizations() {
-    return this.platformAdmin.listOrganizations();
+  listOrganizations(@Query() query: PaginationDto) {
+    return this.platformAdmin.listOrganizations(query);
   }
 
   @Get('invoices')
-  listInvoices() {
-    return this.platformAdmin.listInvoices();
+  listInvoices(@Query() query: PaginationDto) {
+    return this.platformAdmin.listInvoices(query);
   }
 
   @Get('audit-logs')
-  listAuditLogs() {
-    return this.platformAdmin.listAuditLogs();
+  listAuditLogs(@Query() query: PaginationDto) {
+    return this.platformAdmin.listAuditLogs(query);
   }
 
   @Post('organizations')
@@ -218,8 +223,8 @@ export class PlatformAdminController {
 
   // Tenant Plan Change & Add-on Requests Review
   @Get('subscription-requests')
-  listSubscriptionRequests() {
-    return this.platformAdmin.listSubscriptionRequests();
+  listSubscriptionRequests(@Query() query: PaginationDto) {
+    return this.platformAdmin.listSubscriptionRequests(query);
   }
 
   @Patch('subscription-requests/:id/review')

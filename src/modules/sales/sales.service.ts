@@ -1,3 +1,4 @@
+import { queueReceiptDelivery } from './receipt-delivery';
 import { ConfigService } from '@nestjs/config';
 import { generateSignedResourceToken, verifySignedResourceToken } from '../../common/security/signed-token';
 import {
@@ -724,8 +725,13 @@ export class SalesService {
           snapshot: snapshot,
         },
       });
-      const secretKey = this.config.get<string>('JWT_SECRET') ?? 'default-technova-secret';
+      const secretKey = this.config.getOrThrow<string>('RECEIPT_SIGNING_SECRET');
       const signedToken = generateSignedResourceToken(receipt.id, organizationId, secretKey);
+      if (customer) {
+        const baseUrl = this.config.get<string>('PUBLIC_FRONTEND_URL') || this.config.getOrThrow<string>('FRONTEND_URL');
+        const url = new URL('/receipt/' + receipt.id, baseUrl); url.searchParams.set('token', signedToken);
+        await queueReceiptDelivery(tx, { organizationId, saleId: sale.id, receiptId: receipt.id, customer, publicUrl: url.toString() });
+      }
       return {
         saleId: sale.id,
         invoiceNumber: sale.invoiceNumber,
@@ -853,7 +859,7 @@ export class SalesService {
       throw new NotFoundException('Receipt not found.');
     }
 
-    const secretKey = this.config.get<string>('JWT_SECRET') ?? 'default-technova-secret';
+    const secretKey = this.config.getOrThrow<string>('RECEIPT_SIGNING_SECRET');
     const orgId = receipt.sale.branch.organization.id;
     const isValid = verifySignedResourceToken(receipt.id, orgId, token, secretKey);
 

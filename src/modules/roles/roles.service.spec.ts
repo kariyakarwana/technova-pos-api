@@ -23,13 +23,13 @@ describe('RolesService permission editing', () => {
       },
       user: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     };
-    const prisma = {
+    const prisma = { organizationUser: { findMany: jest.fn().mockResolvedValue([{ organizationId: 'org-1' }]) },
       role: {
         findUnique: jest
           .fn()
           .mockResolvedValue({
             id: 'cashier',
-            name: 'CASHIER',
+            name: 'CASHIER', scope: 'org-1', permissions: [],
             isSystem: true,
           }),
       },
@@ -56,7 +56,7 @@ describe('RolesService permission editing', () => {
         { permissionIds: ['sales-manage-id'] },
         context,
       ),
-    ).resolves.toEqual({ updated: true });
+    ).resolves.toEqual({ updated: true, roleId: 'cashier' });
     expect(transaction.rolePermission.createMany).toHaveBeenCalledWith({
       data: [{ roleId: 'cashier', permissionId: 'sales-manage-id' }],
     });
@@ -85,7 +85,7 @@ describe('RolesService permission editing', () => {
         { permissionIds: ['sales-manage-id'] },
         context,
       ),
-    ).rejects.toThrow('SUPER_ADMIN permissions cannot be changed.');
+    ).rejects.toThrow('System administrator and portal roles are immutable.');
   });
 
   it('blocks a role manager from creating a global role', async () => {
@@ -110,7 +110,7 @@ describe('RolesService permission editing', () => {
         { name: 'NEW_ADMIN', permissionIds: ['users-manage-id'] },
         context,
       ),
-    ).rejects.toThrow('Only a super administrator can manage global roles.');
+    ).rejects.toThrow('Only an organization administrator can manage tenant roles.');
     expect(prisma.role.create).not.toHaveBeenCalled();
   });
 
@@ -142,7 +142,7 @@ describe('RolesService permission editing', () => {
         { description: 'Changed' },
         context,
       ),
-    ).rejects.toThrow('Only a super administrator can manage global roles.');
+    ).rejects.toThrow('Only an organization administrator can manage tenant roles.');
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });

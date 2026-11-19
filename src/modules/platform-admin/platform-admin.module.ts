@@ -1,3 +1,4 @@
+import { PlatformAuditInterceptor } from './platform-audit.interceptor';
 import { Module } from '@nestjs/common';
 
 import { AuditModule } from '../audit/audit.module';
@@ -8,7 +9,7 @@ import { PlatformAdminService } from './platform-admin.service';
 @Module({
   imports: [AuthModule, AuditModule],
   controllers: [PlatformAdminController],
-  providers: [PlatformAdminService],
+  providers: [PlatformAdminService, PlatformAuditInterceptor],
   exports: [PlatformAdminService],
 })
 export class PlatformAdminModule {}

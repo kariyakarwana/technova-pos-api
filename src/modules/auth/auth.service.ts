@@ -8,6 +8,7 @@ import { JwtService } from '@nestjs/jwt';
 import { AuditOutcome, RecordStatus, UserStatus } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import nodemailer from 'nodemailer';
+import { smtpOptions } from '../../common/config/smtp';
 
 import {
   hashPassword,
@@ -896,15 +897,7 @@ export class AuthService {
     subject: string,
     html: string,
   ): Promise<void> {
-    const transporter = nodemailer.createTransport({
-      host: this.config.getOrThrow<string>('SMTP_HOST'),
-      port: this.config.get<number>('SMTP_PORT') ?? 587,
-      secure: false,
-      auth: {
-        user: this.config.getOrThrow<string>('SMTP_USER'),
-        pass: this.config.getOrThrow<string>('SMTP_PASSWORD'),
-      },
-    });
+    const transporter = nodemailer.createTransport(smtpOptions(this.config));
     await transporter.sendMail({
       from: this.config.getOrThrow<string>('SMTP_FROM'),
       to,

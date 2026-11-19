@@ -17,6 +17,7 @@ async function bootstrap(): Promise<void> {
 
   const config = app.get(ConfigService);
 
+  if ((config.get<string>('RECEIPT_SIGNING_SECRET')?.length ?? 0) < 32) throw new Error('RECEIPT_SIGNING_SECRET must contain at least 32 characters.');
   app.setGlobalPrefix('api/v1');
 
   app.use(helmet());
@@ -26,7 +27,7 @@ async function bootstrap(): Promise<void> {
   const publicFrontendUrl = config.get<string>('PUBLIC_FRONTEND_URL');
   const allowedOrigins = Array.from(
     new Set(
-      [configuredFrontendUrl, publicFrontendUrl, 'http://localhost:3000', 'http://127.0.0.1:3000']
+      [configuredFrontendUrl, publicFrontendUrl]
         .filter(Boolean)
         .flatMap((u) => u!.split(',').map((item) => item.trim())),
     ),
@@ -34,7 +35,7 @@ async function bootstrap(): Promise<void> {
 
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || config.get('NODE_ENV') !== 'production') {
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
       return callback(new Error('Not allowed by CORS'), false);

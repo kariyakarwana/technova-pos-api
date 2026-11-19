@@ -1,3 +1,4 @@
+import { plansData } from './saas-catalog';
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hash } from "bcryptjs";
@@ -14,6 +15,8 @@ const prisma = new PrismaClient({
 });
 
 const permissions = [
+  { key: "billing:view", description: "View subscription billing" },
+  { key: "billing:manage", description: "Request subscription changes" },
   {
     key: "dashboard:view",
     description: "View the main dashboard",
@@ -87,11 +90,12 @@ async function main() {
 
   const password = process.env.SUPER_ADMIN_PASSWORD;
 
-  const platformAdminEmail = (
-    process.env.PLATFORM_ADMIN_EMAIL || "platform@technovapos.com"
-  ).trim().toLowerCase();
-  const platformAdminPassword =
-    process.env.PLATFORM_ADMIN_PASSWORD || "PlatformAdmin#2026";
+  const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL?.trim().toLowerCase();
+  const platformAdminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+  if (!platformAdminEmail || !platformAdminPassword || platformAdminPassword.length < 16 || platformAdminPassword === 'PlatformAdmin#2026') {
+    throw new Error('Explicit PLATFORM_ADMIN_EMAIL and a unique password of at least 16 characters are required.');
+  }
+  if (process.env.NODE_ENV === 'production') throw new Error('Demo seed is forbidden in production. Use the reviewed SaaS bootstrap/backfill command.');
 
   if (!email) {
     throw new Error("SUPER_ADMIN_EMAIL is required.");
@@ -108,9 +112,7 @@ async function main() {
   }
 
   const superAdminRole = await prisma.role.upsert({
-    where: {
-      name: "SUPER_ADMIN",
-    },
+    where: { scope_name: { scope: 'GLOBAL', name: 'SUPER_ADMIN' } },
     update: {
       description: "Full system administrator",
       isSystem: true,
@@ -123,7 +125,7 @@ async function main() {
   });
 
   const supplierRole = await prisma.role.upsert({
-    where: { name: "SUPPLIER" },
+    where: { scope_name: { scope: 'GLOBAL', name: 'SUPPLIER' } },
     update: { description: "External supplier portal user", isSystem: true },
     create: {
       name: "SUPPLIER",
@@ -133,13 +135,13 @@ async function main() {
   });
 
   const platformSuperAdminRole = await prisma.role.upsert({
-    where: { name: "PLATFORM_SUPER_ADMIN" },
+    where: { scope_name: { scope: 'GLOBAL', name: 'PLATFORM_SUPER_ADMIN' } },
     update: { description: "Root SaaS platform owner", isSystem: true },
     create: { name: "PLATFORM_SUPER_ADMIN", description: "Root SaaS platform owner", isSystem: true },
   });
 
   const customerRole = await prisma.role.upsert({
-    where: { name: "CUSTOMER" },
+    where: { scope_name: { scope: 'GLOBAL', name: 'CUSTOMER' } },
     update: { description: "Customer mobile application user", isSystem: true },
     create: {
       name: "CUSTOMER",
@@ -239,12 +241,7 @@ async function main() {
     where: {
       email: platformAdminEmail,
     },
-    update: {
-      name: "SaaS Platform Super Admin",
-      passwordHash: platformPasswordHash,
-      emailVerified: new Date(),
-      status: UserStatus.ACTIVE,
-    },
+    update: {},
     create: {
       email: platformAdminEmail,
       name: "SaaS Platform Super Admin",
@@ -356,97 +353,11 @@ async function main() {
   }
 
   // Seed Commercial Plans
-  const plansData = [
-    {
-      code: "BASIC",
-      tier: "BASIC" as const,
-      name: "Basic Plan",
-      description: "Entry-level POS for a single shop with up to 10 internal users.",
-      priceUsd: 49.00,
-      vatRate: 0.18,
-      priceWithVatUsd: 57.82,
-      billingCycle: "MONTHLY",
-      maxBranches: 1,
-      maxInternalUsers: 10,
-      monthlyEmailLimit: 0,
-      monthlyWhatsAppBills: 0,
-      monthlyWhatsAppMarketing: 0,
-      monthlyAiRequests: 0,
-      multiBranchEnabled: false,
-      emailEnabled: false,
-      whatsAppBillsEnabled: false,
-      whatsAppMarketingEnabled: false,
-      aiEnabled: false,
-    },
-    {
-      code: "STANDARD",
-      tier: "STANDARD" as const,
-      name: "Standard Plan",
-      description: "For single shop retailers requiring automated transactional email receipts.",
-      priceUsd: 69.00,
-      vatRate: 0.18,
-      priceWithVatUsd: 81.42,
-      billingCycle: "MONTHLY",
-      maxBranches: 1,
-      maxInternalUsers: 20,
-      monthlyEmailLimit: 500,
-      monthlyWhatsAppBills: 0,
-      monthlyWhatsAppMarketing: 0,
-      monthlyAiRequests: 0,
-      multiBranchEnabled: false,
-      emailEnabled: true,
-      whatsAppBillsEnabled: false,
-      whatsAppMarketingEnabled: false,
-      aiEnabled: false,
-    },
-    {
-      code: "PROFESSIONAL",
-      tier: "PROFESSIONAL" as const,
-      name: "Professional Plan",
-      description: "Multi-branch management (up to 3) with WhatsApp bills, marketing, and Gemini AI.",
-      priceUsd: 149.00,
-      vatRate: 0.18,
-      priceWithVatUsd: 175.82,
-      billingCycle: "MONTHLY",
-      maxBranches: 3,
-      maxInternalUsers: 20,
-      monthlyEmailLimit: 1500,
-      monthlyWhatsAppBills: 3000,
-      monthlyWhatsAppMarketing: 250,
-      monthlyAiRequests: 500,
-      multiBranchEnabled: true,
-      emailEnabled: true,
-      whatsAppBillsEnabled: true,
-      whatsAppMarketingEnabled: true,
-      aiEnabled: true,
-    },
-    {
-      code: "ENTERPRISE",
-      tier: "ENTERPRISE" as const,
-      name: "Enterprise Plan",
-      description: "High-volume retail chain operations (up to 10 branches) with full AI & communication.",
-      priceUsd: 199.00,
-      vatRate: 0.18,
-      priceWithVatUsd: 234.82,
-      billingCycle: "MONTHLY",
-      maxBranches: 10,
-      maxInternalUsers: 30,
-      monthlyEmailLimit: 3000,
-      monthlyWhatsAppBills: 7000,
-      monthlyWhatsAppMarketing: 500,
-      monthlyAiRequests: 1500,
-      multiBranchEnabled: true,
-      emailEnabled: true,
-      whatsAppBillsEnabled: true,
-      whatsAppMarketingEnabled: true,
-      aiEnabled: true,
-    },
-  ];
 
   for (const plan of plansData) {
     await prisma.plan.upsert({
       where: { code: plan.code },
-      update: plan,
+      update: {},
       create: plan,
     });
   }

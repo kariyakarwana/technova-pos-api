@@ -241,7 +241,8 @@ model User {
 
 model Role {
   id          String   @id @default(cuid())
-  name        String   @unique
+  name        String
+  scope       String   @default("GLOBAL")
   description String?
   isSystem    Boolean  @default(false)
   createdAt   DateTime @default(now())
@@ -250,6 +251,7 @@ model Role {
   users       UserRole[]
   permissions RolePermission[]
 
+  @@unique([scope, name])
   @@map("roles")
 }
 
@@ -477,6 +479,7 @@ model Organization {
   subscription                      Subscription?
   subscriptionRequests              SubscriptionRequest[]
   usages                            OrganizationUsage[]
+  subscriptionUsages                SubscriptionUsage[]
   emailConfig                       TenantEmailConfig?
 
   @@index([status])
@@ -1718,6 +1721,7 @@ model Subscription {
   currentPeriodStart DateTime           @default(now())
   currentPeriodEnd   DateTime
   cancelAtPeriodEnd  Boolean            @default(false)
+  billingAnchorDay  Int                @default(1)
 
   // Custom limit overrides & allocated add-on packs
   extraBranches          Int @default(0)
@@ -1735,6 +1739,7 @@ model Subscription {
   updatedAt    DateTime              @updatedAt
 
   @@map("subscriptions")
+  @@index([status, currentPeriodEnd])
 }
 
 model SubscriptionAddon {
@@ -1762,6 +1767,13 @@ model SubscriptionInvoice {
   id             String        @id @default(cuid())
   subscriptionId String
   invoiceNumber  String        @unique
+  billingPeriodKey String?      @unique
+  lineItems      Json           @default("[]")
+  currency       String         @default("USD")
+  vatRateSnapshot Decimal?      @db.Decimal(10, 6)
+  periodStart    DateTime?
+  periodEnd      DateTime?
+  customerSnapshot Json?
   subtotalUsd    Decimal       @db.Decimal(10, 2)
   vatAmountUsd   Decimal       @db.Decimal(10, 2)
   totalAmountUsd Decimal       @db.Decimal(10, 2)
@@ -1776,7 +1788,24 @@ model SubscriptionInvoice {
   subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
   @@index([subscriptionId, status])
+  @@index([status, dueDate])
   @@map("subscription_invoices")
+}
+
+model SubscriptionUsage {
+  id String @id @default(cuid())
+  organizationId String
+  periodStart DateTime
+  periodEnd DateTime
+  emailsSent Int @default(0)
+  whatsAppBillsSent Int @default(0)
+  whatsAppMarketingSent Int @default(0)
+  aiRequestsUsed Int @default(0)
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  @@unique([organizationId, periodStart])
+  @@index([periodEnd])
+  @@map("subscription_usages")
 }
 
 model OrganizationUsage {

@@ -28,7 +28,7 @@ export class BusinessAssistantService {
 
     // 1. Derive organization context exclusively from authenticated user
     const organizationId = await this.resolveOrganizationId(user.id);
-    await this.quota.checkAiRequestAllowed(organizationId);
+
 
     // 2. Validate branch context if specified
     if (dto.branchId) {
@@ -48,12 +48,12 @@ export class BusinessAssistantService {
     const conversationId = dto.conversationId || randomUUID();
 
     // 4. Delegate to orchestrator
+    const refund = await this.quota.reserveUsage(organizationId, 'aiRequestsUsed');
     const orchestrationResult = await this.orchestrator.orchestrate({
       message: dto.message,
       conversationId,
       context,
-    });
-    await this.quota.recordAiRequestUsed(organizationId);
+    }).catch(async error => { await refund(); throw error; });
 
     const processingTimeMs = Date.now() - startTime;
 

@@ -1,0 +1,275 @@
+{
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\main.py:63",
+      "request": [],
+      "response": "dict[str, str]",
+      "handler": "def health_check() -> dict[str, str]:\n    return {\"status\": \"healthy\"}"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/demand-forecast/forecast",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\router.py:22",
+      "request": [
+        {
+          "name": "request",
+          "type": "DemandForecastRequest"
+        }
+      ],
+      "response": "DemandForecastResponse",
+      "handler": "def forecast(request: DemandForecastRequest) -> DemandForecastResponse:\n    \"\"\"Generate multi-day physical unit demand predictions using trained production LightGBM model.\n\n    Returns:\n    - product_id\n    - store_id\n    - forecast_date\n    - predicted_units\n    - horizon\n    - predictions (list of daily forecast points)\n    - total_predicted_units\n    - model_metadata (version, model type, target=units_sold, features)\n    \"\"\"\n    try:\n        return create_demand_forecast(request)\n    except FileNotFoundError as error:\n        raise HTTPException(\n            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,\n            detail=str(error),\n        ) from error\n    except ValueError as error:\n        raise HTTPException(\n            status_code=status.HTTP_400_BAD_REQUEST,\n            detail=str(error),\n        ) from error\n    except Exception as error:\n        raise HTTPException(\n            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n            detail=f\"Demand forecasting inference failed: {error}\",\n        ) from error"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/pricing/recommend",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\dynamic_pricing\\router.py:15",
+      "request": [
+        {
+          "name": "request",
+          "type": "PricingRecommendationRequest"
+        }
+      ],
+      "response": "PricingRecommendationResponse",
+      "handler": "def recommend(request: PricingRecommendationRequest) -> PricingRecommendationResponse:\n    try:\n        return create_pricing_recommendation(request)\n    except (FileNotFoundError, ValueError) as error:\n        raise HTTPException(status_code=503, detail=str(error)) from error"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/loyalty/recommendations",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\loyalty_recommendations\\router.py:15",
+      "request": [
+        {
+          "name": "request",
+          "type": "LoyaltyRecommendationRequest"
+        }
+      ],
+      "response": "LoyaltyRecommendationResponse",
+      "handler": "def recommendations(request: LoyaltyRecommendationRequest) -> LoyaltyRecommendationResponse:\n    try:\n        return create_loyalty_recommendations(request)\n    except (FileNotFoundError, ValueError) as error:\n        raise HTTPException(status_code=503, detail=str(error)) from error"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/sales-forecast/forecast",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\sales_forecasting\\router.py:15",
+      "request": [
+        {
+          "name": "request",
+          "type": "SalesForecastRequest"
+        }
+      ],
+      "response": "SalesForecastResponse",
+      "handler": "def forecast(request: SalesForecastRequest) -> SalesForecastResponse:\n    try:\n        return create_sales_forecast(request)\n    except ValueError as error:\n        raise HTTPException(status_code=400, detail=str(error)) from error\n    except FileNotFoundError as error:\n        raise HTTPException(status_code=503, detail=str(error)) from error"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/inventory/forecast",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\router.py:18",
+      "request": [
+        {
+          "name": "request",
+          "type": "StockForecastRequest"
+        }
+      ],
+      "response": "StockForecastResponse",
+      "handler": "def forecast(request: StockForecastRequest) -> StockForecastResponse:\n    try:\n        return create_stock_forecast(request)\n    except (FileNotFoundError, ValueError) as error:\n        raise HTTPException(status_code=503, detail=str(error)) from error"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/inventory/forecast/multi-horizon",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\router.py:26",
+      "request": [
+        {
+          "name": "request",
+          "type": "MultiHorizonForecastRequest"
+        }
+      ],
+      "response": "MultiHorizonForecastResponse",
+      "handler": "def multi_horizon_forecast(\n    request: MultiHorizonForecastRequest,\n) -> MultiHorizonForecastResponse:\n    try:\n        return create_multi_horizon_forecast(request)\n    except (FileNotFoundError, ValueError) as error:\n        raise HTTPException(status_code=503, detail=str(error)) from error"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/recommendations/recommend",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\recommendation_system\\api\\router.py:26",
+      "request": [
+        {
+          "name": "request",
+          "type": "RecommendationRequest"
+        }
+      ],
+      "response": "RecommendationResponse",
+      "handler": "def recommend(request: RecommendationRequest) -> RecommendationResponse:\n    \"\"\"Generate ranked product recommendations for TechNova POS.\n\n    Supported contexts:\n    - **CUSTOMER**: Personalized recommendations tailored to loyalty purchase history and brand affinity.\n    - **PRODUCT**: Up-sell, cross-sell, and complementary accessory discovery for a selected product.\n    - **BRANCH**: Localized assortment ranking with empirical Bayesian smoothing.\n    - **TRENDING**: High-velocity momentum products accelerating in sales.\n    - **COLD_START**: Robust fallback recommendations for anonymous walk-ins or new branches.\n    - **CART_READY**: Real-time basket completion recommendations for multiple items in cart.\n\n    Returns:\n    - Ranked products with normalized confidence scores\n    - Machine-readable `reason_code` and human-readable `reason`\n    - Physical branch stock availability\n    - Model provenance metadata\n    \"\"\"\n    try:\n        return create_recommendations(request)\n    except FileNotFoundError as error:\n        logger.error(\"Recommendation artifact missing: %s\", error)\n        raise HTTPException(\n            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,\n            detail=f\"Recommendation service unavailable: {error}\",\n        ) from error\n    except ValueError as error:\n        logger.warning(\"Invalid recommendation request: %s\", error)\n        raise HTTPException(\n            status_code=status.HTTP_400_BAD_REQUEST,\n            detail=str(error),\n        ) from error\n    except Exception:\n        logger.exception(\"Unexpected error in recommendation router\")\n        raise HTTPException(\n            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,\n            detail=\"Recommendation inference failed unexpectedly.\",\n        ) from None"
+    }
+  ],
+  "models": [
+    {
+      "name": "DailyDemandObservation",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DailyDemandObservation(BaseModel):\n    \"\"\"Raw or aggregated daily demand observation from POS completed/partially-refunded sales.\"\"\"\n\n    model_config = ConfigDict(frozen=True)\n\n    organization_id: str = Field(min_length=1)\n    branch_id: str = Field(min_length=1)\n    product_id: str = Field(min_length=1)\n    date: dt.date\n    quantity: float = Field(ge=0.0)\n    unit_price: float = Field(default=0.0, ge=0.0)\n    cost_price: float = Field(default=0.0, ge=0.0)\n    selling_price: float = Field(default=0.0, ge=0.0)\n    reorder_level: float = Field(default=0.0, ge=0.0)\n    category_id: str | None = None\n    brand_id: str | None = None\n    is_in_stock: bool = True\n    is_branch_open: bool = True\n    has_scheduled_discount: bool = False\n    discount_rate: float = Field(default=0.0, ge=0.0, le=1.0)\n    discount_type: str | None = None"
+    },
+    {
+      "name": "DemandForecastProductInput",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DemandForecastProductInput(BaseModel):\n    \"\"\"Product-level input payload for demand forecasting inference.\"\"\"\n\n    model_config = ConfigDict(frozen=True)\n\n    product_id: str = Field(min_length=1)\n    sku: str | None = None\n    category_id: str | None = None\n    brand_id: str | None = None\n    cost_price: float = Field(default=0.0, ge=0.0)\n    selling_price: float = Field(default=0.0, ge=0.0)\n    reorder_level: float = Field(default=0.0, ge=0.0)\n    current_stock: float = Field(default=0.0, ge=0.0)\n    recent_daily_demand: list[float] = Field(min_length=1)\n\n    @model_validator(mode=\"after\")\n    def validate_demand_history(self) -> DemandForecastProductInput:\n        if any(value < 0 for value in self.recent_daily_demand):\n            raise ValueError(\"recent_daily_demand entries must be non-negative\")\n        return self"
+    },
+    {
+      "name": "FutureCalendarDayInput",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class FutureCalendarDayInput(BaseModel):\n    \"\"\"Calendar and planned promotion input for future prediction dates.\"\"\"\n\n    model_config = ConfigDict(frozen=True)\n\n    date: dt.date\n    day_of_week: int | None = Field(default=None, ge=0, le=6)\n    is_weekend: bool | None = None\n    is_public_holiday: bool | None = None\n    is_mercantile_holiday: bool | None = None\n    is_poya_day: bool | None = None\n    is_festive_peak: bool | None = None\n    has_discount: bool = False\n    discount_rate: float = Field(default=0.0, ge=0.0, le=1.0)\n    discount_type: str | None = None"
+    },
+    {
+      "name": "DemandFeatureRow",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DemandFeatureRow(BaseModel):\n    \"\"\"Model-ready feature row matching DEMAND_FEATURE_COLUMNS.\"\"\"\n\n    model_config = ConfigDict(extra=\"forbid\")\n\n    # Demand Lags\n    demand_lag_1: float\n    demand_lag_2: float\n    demand_lag_3: float\n    demand_lag_7: float\n    demand_lag_14: float\n    demand_lag_21: float\n    demand_lag_28: float\n\n    # Rolling Statistics\n    rolling_mean_7: float\n    rolling_mean_14: float\n    rolling_mean_28: float\n    rolling_std_7: float\n    rolling_std_14: float\n    rolling_std_28: float\n    rolling_max_7: float\n    rolling_max_14: float\n    rolling_max_28: float\n\n    # Pricing & Valuation\n    unit_price: float\n    price_index_28: float\n    cost_price: float\n    selling_price: float\n    margin_rate: float\n    reorder_level: float\n\n    # Scheduled Promotions\n    has_scheduled_discount: int\n    discount_rate: float\n\n    # Calendar Signals\n    day_of_week: int\n    day_of_month: int\n    month: int\n    is_weekend: int\n    is_month_start: int\n    is_month_end: int\n    is_payday_window: int\n\n    # Sri Lankan Holidays & Retail Events\n    is_public_holiday: int\n    is_mercantile_holiday: int\n    is_poya_day: int\n    is_festive_peak: int\n\n    # Operating Context\n    is_in_stock: int\n    is_branch_open: int\n\n    def to_dict(self) -> dict[str, Any]:\n        return self.model_dump()"
+    },
+    {
+      "name": "DailyForecastContext",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DailyForecastContext(BaseModel):\n    \"\"\"Optional per-day operating context override for a future forecast date.\"\"\"\n\n    model_config = ConfigDict(extra=\"forbid\")\n\n    forecast_date: dt.date | None = Field(default=None, description=\"Forecast date in YYYY-MM-DD\")\n    is_open: int = Field(default=1, ge=0, le=1, description=\"1 if store is open, 0 if closed\")\n    is_promo: int = Field(default=0, ge=0, le=1, description=\"1 if promotion is active, 0 otherwise\")\n    unit_price: float | None = Field(default=None, gt=0.0, description=\"Override unit price for this day if discounted\")\n    state_holiday: str = Field(default=\"0\", description=\"State holiday code: '0', 'a', 'b', 'c'\")\n    school_holiday: int = Field(default=0, ge=0, le=1, description=\"1 if school holiday, 0 otherwise\")\n\n    @field_validator(\"state_holiday\", mode=\"before\")\n    @classmethod\n    def validate_state_holiday(cls, v: Any) -> str:\n        s = str(v)\n        if s not in VALID_STATE_HOLIDAYS:\n            raise ValueError(f\"Invalid state_holiday: {v!r}. Must be one of {VALID_STATE_HOLIDAYS}\")\n        return s\n\n    @model_validator(mode=\"before\")\n    @classmethod\n    def forbid_customers(cls, data: Any) -> Any:\n        if isinstance(data, dict) and \"customers\" in data:\n            raise ValueError(\"Feature 'customers' is strictly forbidden.\")\n        return data"
+    },
+    {
+      "name": "DemandForecastRequest",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DemandForecastRequest(BaseModel):\n    \"\"\"Inference request for SKU x Store multi-day unit demand forecasting.\"\"\"\n\n    model_config = ConfigDict(extra=\"forbid\")\n\n    product_id: str = Field(min_length=1, description=\"Product / SKU identifier\")\n    store_id: str = Field(min_length=1, description=\"Store / Branch identifier\")\n    category: str = Field(description=\"Product category\")\n    base_unit_price: float = Field(gt=0.0, description=\"Regular base unit selling price\")\n    unit_price: float | None = Field(default=None, gt=0.0, description=\"Active promotional or standard unit price\")\n    store_type: str = Field(default=\"a\", description=\"Store type: 'a', 'b', 'c', 'd'\")\n    assortment: str = Field(default=\"a\", description=\"Store assortment level: 'a', 'b', 'c'\")\n    promo2: int = Field(default=0, ge=0, le=1, description=\"Continuous store promotion flag (0 or 1)\")\n    horizon: int = Field(default=7, description=\"Forecast horizon in days (1, 7, 14, 30)\")\n    forecast_date: dt.date | None = Field(default=None, description=\"Start date of forecast horizon (defaults to tomorrow)\")\n    daily_contexts: list[DailyForecastContext] | None = Field(\n        default=None,\n        description=\"Optional day-by-day operating conditions for the horizon dates\",\n    )\n    has_historical_data: bool | None = Field(\n        default=None,\n        description=\"Optional indicator whether real historical sales exist for this product and branch\",\n    )\n\n    @field_validator(\"product_id\", \"store_id\")\n    @classmethod\n    def validate_non_empty_strings(cls, v: str) -> str:\n        if not v or not v.strip():\n            raise ValueError(\"Field cannot be empty or whitespace only\")\n        return v.strip()\n\n    @field_validator(\"category\")\n    @classmethod\n    def validate_category(cls, v: str) -> str:\n        if not v or not v.strip():\n            raise ValueError(\"category cannot be empty or whitespace only\")\n        return v.strip()\n\n    @field_validator(\"store_type\")\n    @classmethod\n    def validate_store_type(cls, v: str) -> str:\n        if v not in VALID_STORE_TYPES:\n            raise ValueError(f\"Invalid store_type: {v!r}. Allowed values are: {VALID_STORE_TYPES}\")\n        return v\n\n    @field_validator(\"assortment\")\n    @classmethod\n    def validate_assortment(cls, v: str) -> str:\n        if v not in VALID_ASSORTMENTS:\n            raise ValueError(f\"Invalid assortment: {v!r}. Allowed values are: {VALID_ASSORTMENTS}\")\n        return v\n\n    @field_validator(\"horizon\")\n    @classmethod\n    def validate_horizon(cls, v: int) -> int:\n        if v not in VALID_HORIZONS:\n            raise ValueError(f\"Invalid horizon: {v}. Supported horizons are {VALID_HORIZONS}\")\n        return v\n\n    @model_validator(mode=\"before\")\n    @classmethod\n    def check_extra_and_aliases(cls, data: Any) -> Any:\n        if isinstance(data, dict):\n            if \"customers\" in data:\n                raise ValueError(\"Feature 'customers' is strictly forbidden.\")\n            # Allow store_id to be passed as int, convert to str\n            if \"store_id\" in data and isinstance(data[\"store_id\"], int):\n                data[\"store_id\"] = str(data[\"store_id\"])\n            # Allow forecast_horizon as alias for horizon\n            if \"forecast_horizon\" in data and \"horizon\" not in data:\n                data[\"horizon\"] = data.pop(\"forecast_horizon\")\n        return data"
+    },
+    {
+      "name": "DailyUnitForecastPoint",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DailyUnitForecastPoint(BaseModel):\n    \"\"\"Daily predicted physical demand units point.\"\"\"\n\n    product_id: str = Field(description=\"Product identifier\")\n    store_id: str = Field(description=\"Store identifier\")\n    forecast_date: dt.date = Field(description=\"Forecast date in YYYY-MM-DD\")\n    predicted_units: float = Field(ge=0.0, description=\"Predicted units sold (>= 0.0, 0.0 if closed)\")\n    horizon: int = Field(description=\"Forecast horizon length in days\")\n    day_of_week: int = Field(ge=0, le=6, description=\"Day of week (0=Monday, 6=Sunday)\")\n    is_open: int = Field(ge=0, le=1, description=\"1 if store was open, 0 if closed\")\n    is_promo: int = Field(ge=0, le=1, description=\"1 if promotion active, 0 otherwise\")\n    unit_price: float = Field(gt=0.0, description=\"Unit price evaluated\")"
+    },
+    {
+      "name": "DemandForecastModelInfo",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DemandForecastModelInfo(BaseModel):\n    \"\"\"Trained model metadata and version info.\"\"\"\n\n    model_type: str = Field(default=\"lightgbm\", description=\"Model architecture type\")\n    target: str = Field(default=\"units_sold\", description=\"Model prediction target\")\n    version: str = Field(default=\"1.0.0\", description=\"Model version\")\n    feature_columns: list[str] = Field(default_factory=list, description=\"Exact feature columns used\")\n    feature_count: int = Field(default=11, description=\"Total feature count\")"
+    },
+    {
+      "name": "DemandForecastResponse",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\demand_forecasting\\schemas.py",
+      "definition": "class DemandForecastResponse(BaseModel):\n    \"\"\"Structured response for demand forecasting.\"\"\"\n\n    product_id: str = Field(description=\"Product identifier\")\n    store_id: str = Field(description=\"Store identifier\")\n    forecast_date: dt.date = Field(description=\"Forecast start date\")\n    predicted_units: float = Field(ge=0.0, description=\"Predicted units (sum over horizon)\")\n    horizon: int = Field(description=\"Forecast horizon in days\")\n    predictions: list[DailyUnitForecastPoint] = Field(description=\"Daily forecast predictions\")\n    total_predicted_units: float = Field(ge=0.0, description=\"Total sum of predicted units over the horizon\")\n    model_metadata: DemandForecastModelInfo = Field(description=\"Model metadata and version\")"
+    },
+    {
+      "name": "PricingRecommendationRequest",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\dynamic_pricing\\schemas.py",
+      "definition": "class PricingRecommendationRequest(BaseModel):\n    product_id: str\n    pricing_date: date\n    current_price: float = Field(gt=0)\n    unit_cost: float = Field(gt=0)\n    min_margin_rate: float = Field(default=0.10, ge=0, le=1)\n    max_change_rate: float = Field(default=0.15, gt=0, le=0.50)\n    candidate_steps: int = Field(default=13, ge=5, le=101)\n    demand_lag_1: float = Field(ge=0)\n    demand_lag_7: float = Field(ge=0)\n    demand_lag_14: float = Field(ge=0)\n    rolling_mean_7: float = Field(ge=0)\n    rolling_mean_28: float = Field(ge=0)\n    rolling_std_7: float = Field(ge=0)\n    price_index_28: float = Field(gt=0)\n    orders_lag_1: float = Field(ge=0)\n    customers_lag_1: float = Field(ge=0)\n\n    @model_validator(mode=\"after\")\n    def validate_margin(self) -> \"PricingRecommendationRequest\":\n        if self.current_price <= self.unit_cost:\n            raise ValueError(\"current_price must be greater than unit_cost\")\n        return self\n\n    def model_features(self) -> dict[str, float]:\n        return {\n            \"demand_lag_1\": self.demand_lag_1,\n            \"demand_lag_7\": self.demand_lag_7,\n            \"demand_lag_14\": self.demand_lag_14,\n            \"rolling_mean_7\": self.rolling_mean_7,\n            \"rolling_mean_28\": self.rolling_mean_28,\n            \"rolling_std_7\": self.rolling_std_7,\n            \"unit_price\": self.current_price,\n            \"price_index_28\": self.price_index_28,\n            \"orders_lag_1\": self.orders_lag_1,\n            \"customers_lag_1\": self.customers_lag_1,\n            \"day_of_week\": float(self.pricing_date.weekday()),\n            \"month\": float(self.pricing_date.month),\n            \"is_weekend\": float(self.pricing_date.weekday() >= 5),\n        }"
+    },
+    {
+      "name": "PricingRecommendationResponse",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\dynamic_pricing\\schemas.py",
+      "definition": "class PricingRecommendationResponse(BaseModel):\n    product_id: str\n    current_price: float\n    recommended_price: float\n    expected_daily_demand: float\n    expected_daily_profit: float\n    price_change_rate: float\n    decision: str\n    minimum_allowed_price: float\n    maximum_allowed_price: float"
+    },
+    {
+      "name": "LoyaltyRecommendationRequest",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\loyalty_recommendations\\schemas.py",
+      "definition": "class LoyaltyRecommendationRequest(BaseModel):\n    customer_id: str = Field(min_length=1)\n    top_k: int = Field(default=10, ge=1, le=50)"
+    },
+    {
+      "name": "LoyaltyProfile",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\loyalty_recommendations\\schemas.py",
+      "definition": "class LoyaltyProfile(BaseModel):\n    segment: str\n    loyalty_score: float\n    recency_days: int\n    order_count: int\n    total_spend: float\n    units_purchased: float"
+    },
+    {
+      "name": "ProductRecommendation",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\loyalty_recommendations\\schemas.py",
+      "definition": "class ProductRecommendation(BaseModel):\n    product_id: str\n    description: str\n    score: float\n    reason: str"
+    },
+    {
+      "name": "LoyaltyRecommendationResponse",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\loyalty_recommendations\\schemas.py",
+      "definition": "class LoyaltyRecommendationResponse(BaseModel):\n    customer_id: str\n    profile: LoyaltyProfile\n    recommendations: list[ProductRecommendation]"
+    },
+    {
+      "name": "DailyRevenuePoint",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\sales_forecasting\\schemas.py",
+      "definition": "class DailyRevenuePoint(BaseModel):\n    date: datetime.date = Field(description=\"Transaction date in YYYY-MM-DD\")\n    revenue: float = Field(ge=0, description=\"Observed daily revenue in LKR, must be >= 0\")\n    is_operating_day: int = Field(default=1, ge=0, le=1, description=\"1 if operating, 0 otherwise\")"
+    },
+    {
+      "name": "FutureCalendarPoint",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\sales_forecasting\\schemas.py",
+      "definition": "class FutureCalendarPoint(BaseModel):\n    date: datetime.date = Field(description=\"Future date in YYYY-MM-DD\")\n    is_operating_day: int = Field(default=1, ge=0, le=1, description=\"1 if branch will operate, 0 otherwise\")\n    active_discounts: int = Field(default=0, ge=0, description=\"Count of active planned discounts\")"
+    },
+    {
+      "name": "DailyForecastPrediction",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\sales_forecasting\\schemas.py",
+      "definition": "class DailyForecastPrediction(BaseModel):\n    date: datetime.date = Field(description=\"Forecast date in YYYY-MM-DD\")\n    predicted_revenue: float = Field(ge=0, description=\"Predicted daily revenue in LKR\")"
+    },
+    {
+      "name": "SalesForecastRequest",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\sales_forecasting\\schemas.py",
+      "definition": "class SalesForecastRequest(BaseModel):\n    organization_id: str = Field(min_length=1, description=\"Organization tenant ID\")\n    branch_id: str = Field(min_length=1, description=\"Branch ID\")\n    forecast_horizon: Literal[1, 7, 14, 30] = Field(\n        description=\"Forecast horizon in days (1, 7, 14, or 30)\"\n    )\n    recent_daily_revenue: list[DailyRevenuePoint] = Field(\n        default_factory=list,\n        description=\"Recent historical daily revenue observations\",\n    )\n    future_calendar: list[FutureCalendarPoint] = Field(\n        default_factory=list,\n        description=\"Known-future calendar inputs for the forecast horizon\",\n    )\n\n    @model_validator(mode=\"after\")\n    def validate_request(self) -> \"SalesForecastRequest\":\n        if not self.organization_id.strip():\n            raise ValueError(\"organization_id must not be empty or whitespace\")\n        if not self.branch_id.strip():\n            raise ValueError(\"branch_id must not be empty or whitespace\")\n\n        if self.future_calendar:\n            for i in range(1, len(self.future_calendar)):\n                if self.future_calendar[i].date <= self.future_calendar[i - 1].date:\n                    raise ValueError(\"future_calendar dates must be strictly chronological\")\n\n        return self"
+    },
+    {
+      "name": "SalesForecastResponse",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\sales_forecasting\\schemas.py",
+      "definition": "class SalesForecastResponse(BaseModel):\n    organization_id: str\n    branch_id: str\n    forecast_horizon: int\n    predictions: list[DailyForecastPrediction]"
+    },
+    {
+      "name": "StockForecastRequest",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class StockForecastRequest(BaseModel):\n    product_id: str\n    forecast_date: date\n    current_stock: float = Field(ge=0)\n    lead_time_days: int = Field(default=7, ge=1, le=180)\n    review_period_days: int = Field(default=14, ge=1, le=365)\n    service_level: float = Field(default=0.95, gt=0.5, lt=0.999)\n    demand_lag_1: float = Field(ge=0)\n    demand_lag_7: float = Field(ge=0)\n    demand_lag_14: float = Field(ge=0)\n    rolling_mean_7: float = Field(ge=0)\n    rolling_mean_28: float = Field(ge=0)\n    rolling_std_7: float = Field(ge=0)\n    unit_price: float = Field(gt=0)\n    price_index_28: float = Field(gt=0)\n    orders_lag_1: float = Field(ge=0)\n    customers_lag_1: float = Field(ge=0)\n\n    @model_validator(mode=\"after\")\n    def validate_stock_context(self) -> \"StockForecastRequest\":\n        if self.current_stock < 0:\n            raise ValueError(\"current_stock must not be negative\")\n        return self\n\n    def model_features(self) -> dict[str, float]:\n        return {\n            \"demand_lag_1\": self.demand_lag_1,\n            \"demand_lag_7\": self.demand_lag_7,\n            \"demand_lag_14\": self.demand_lag_14,\n            \"rolling_mean_7\": self.rolling_mean_7,\n            \"rolling_mean_28\": self.rolling_mean_28,\n            \"rolling_std_7\": self.rolling_std_7,\n            \"unit_price\": self.unit_price,\n            \"price_index_28\": self.price_index_28,\n            \"orders_lag_1\": self.orders_lag_1,\n            \"customers_lag_1\": self.customers_lag_1,\n            \"day_of_week\": float(self.forecast_date.weekday()),\n            \"month\": float(self.forecast_date.month),\n            \"is_weekend\": float(self.forecast_date.weekday() >= 5),\n        }"
+    },
+    {
+      "name": "StockForecastResponse",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class StockForecastResponse(BaseModel):\n    product_id: str\n    predicted_daily_demand: float\n    lead_time_demand: float\n    safety_stock: float\n    reorder_point: float\n    recommended_order_quantity: float\n    stockout_risk: float\n    status: str"
+    },
+    {
+      "name": "MultiHorizonForecastRequest",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class MultiHorizonForecastRequest(BaseModel):\n    product_id: str = Field(min_length=1)\n    start_date: date\n    forecast_days: int = Field(default=365, ge=30, le=730)\n    recent_daily_demand: list[float] = Field(min_length=7, max_length=365)\n    current_stock: float = Field(ge=0)\n    lead_time_days: int = Field(default=7, ge=1, le=180)\n    review_period_days: int = Field(default=14, ge=1, le=365)\n    service_level: float = Field(default=0.95, gt=0.5, lt=0.999)\n    unit_price: float = Field(gt=0)\n    price_index_28: float = Field(default=1.0, gt=0)\n    orders_lag_1: float = Field(ge=0)\n    customers_lag_1: float = Field(ge=0)\n\n    @model_validator(mode=\"after\")\n    def validate_forecast_window(self) -> \"MultiHorizonForecastRequest\":\n        if any(value < 0 for value in self.recent_daily_demand):\n            raise ValueError(\"recent_daily_demand values must not be negative\")\n        required_days = self.lead_time_days + self.review_period_days\n        if self.forecast_days < required_days:\n            raise ValueError(\n                \"forecast_days must cover lead_time_days plus review_period_days\"\n            )\n        return self"
+    },
+    {
+      "name": "DailyDemandForecast",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class DailyDemandForecast(BaseModel):\n    date: date\n    predicted_demand: float"
+    },
+    {
+      "name": "AggregatedDemandForecast",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class AggregatedDemandForecast(BaseModel):\n    label: str\n    start_date: date\n    end_date: date\n    total_demand: float\n    average_daily_demand: float"
+    },
+    {
+      "name": "MultiHorizonStockPlan",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class MultiHorizonStockPlan(BaseModel):\n    current_stock: float\n    lead_time_demand: float\n    safety_stock: float\n    reorder_point: float\n    target_stock: float\n    recommended_order_quantity: float\n    stockout_risk: float\n    status: str"
+    },
+    {
+      "name": "MultiHorizonForecastSummary",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class MultiHorizonForecastSummary(BaseModel):\n    forecast_days: int\n    total_predicted_demand: float\n    average_daily_demand: float\n    next_7_days_demand: float\n    next_30_days_demand: float\n    peak_demand_date: date\n    peak_daily_demand: float"
+    },
+    {
+      "name": "DirectHorizonForecast",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class DirectHorizonForecast(BaseModel):\n    horizon_days: int\n    predicted_demand: float\n    lower_bound: float\n    upper_bound: float\n    interval_level: float\n    method: str"
+    },
+    {
+      "name": "ForecastDataReadiness",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class ForecastDataReadiness(BaseModel):\n    history_days: int\n    maturity: str\n    confidence: str\n    production_ready: bool\n    recommended_action: str"
+    },
+    {
+      "name": "MultiHorizonForecastResponse",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\stock_intelligence\\schemas.py",
+      "definition": "class MultiHorizonForecastResponse(BaseModel):\n    product_id: str\n    summary: MultiHorizonForecastSummary\n    stock_plan: MultiHorizonStockPlan\n    direct_horizons: list[DirectHorizonForecast]\n    data_readiness: ForecastDataReadiness\n    daily: list[DailyDemandForecast]\n    weekly: list[AggregatedDemandForecast]\n    monthly: list[AggregatedDemandForecast]\n    seasonal: list[AggregatedDemandForecast]\n    yearly: list[AggregatedDemandForecast]\n    notes: list[str]"
+    },
+    {
+      "name": "RecommendationRequest",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\recommendation_system\\api\\schemas.py",
+      "definition": "class RecommendationRequest(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\")\n\n    organization_id: str = Field(\n        ...,\n        min_length=1,\n        description=\"Tenant organization identifier for strict multi-tenant isolation.\",\n        examples=[\"org_technova_default\"],\n    )\n    context: RecommendationContext = Field(\n        ...,\n        description=\"The operational POS context triggering the recommendation request.\",\n        examples=[\"PRODUCT\"],\n    )\n    branch_id: str | None = Field(\n        default=None,\n        description=\"The physical retail branch identifier for inventory stock-aware filtering.\",\n        examples=[\"BRANCH-001\"],\n    )\n    customer_id: str | None = Field(\n        default=None,\n        description=\"Synthetic customer identifier for personalized recommendations.\",\n        examples=[\"CUST-0001\"],\n    )\n    product_id: str | None = Field(\n        default=None,\n        description=\"Target product SKU/ID when context is PRODUCT.\",\n        examples=[\"PROD-COMP-001\"],\n    )\n    product_ids: list[str] | None = Field(\n        default=None,\n        description=\"List of target product SKUs/IDs when context is CART_READY.\",\n        examples=[[\"PROD-COMP-001\", \"PROD-PERI-001\"]],\n    )\n    top_n: int = Field(\n        default=5,\n        ge=1,\n        le=20,\n        description=\"Maximum number of ranked recommendations to return.\",\n    )\n    include_substitutes: bool = Field(\n        default=False,\n        description=\"Whether to return substitute items if exact matches are out of stock.\",\n    )\n    category: str | None = Field(\n        default=None,\n        description=\"Category of the target product from runtime DB.\",\n    )\n    product_name: str | None = Field(\n        default=None,\n        description=\"Name of the target product from runtime DB.\",\n    )\n    brand: str | None = Field(\n        default=None,\n        description=\"Brand of the target product from runtime DB.\",\n    )\n    price: float | None = Field(\n        default=None,\n        description=\"Price of the target product from runtime DB.\",\n    )\n\n    @model_validator(mode=\"after\")\n    def validate_context_requirements(self) -> RecommendationRequest:\n        \"\"\"Validates context-specific field requirements and rejects incomplete requests.\"\"\"\n        ctx = self.context\n\n        if ctx == RecommendationContext.PRODUCT:\n            if not self.product_id or not self.product_id.strip():\n                raise ValueError(\"product_id is required when context is PRODUCT.\")\n\n        elif ctx == RecommendationContext.CART_READY:\n            if not self.product_ids or len(self.product_ids) == 0:\n                raise ValueError(\"product_ids list with at least 1 item is required when context is CART_READY.\")\n\n        elif ctx == RecommendationContext.BRANCH:\n            if not self.branch_id or not self.branch_id.strip():\n                raise ValueError(\"branch_id is required when context is BRANCH.\")\n\n        elif ctx == RecommendationContext.CUSTOMER and (\n            not self.customer_id or not self.customer_id.strip()\n        ):\n            raise ValueError(\"customer_id is required when context is CUSTOMER.\")\n\n        return self"
+    },
+    {
+      "name": "RecommendedProduct",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\recommendation_system\\api\\schemas.py",
+      "definition": "class RecommendedProduct(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\")\n\n    product_id: str = Field(..., description=\"Unique product SKU/identifier.\")\n    name: str | None = Field(default=None, description=\"Human-readable product name.\")\n    category: str | None = Field(default=None, description=\"Top-level or primary category.\")\n    brand: str | None = Field(default=None, description=\"Product brand name.\")\n    price: float | None = Field(default=None, description=\"Current selling unit price.\")\n    score: float = Field(..., description=\"Normalized recommendation confidence score in [0.0, 1.0].\")\n    reason_code: RecommendationReasonCode = Field(\n        ...,\n        description=\"Machine-readable deterministic reason token.\",\n    )\n    reason: str = Field(..., description=\"Human-readable cashier/customer explanation.\")\n    stock_quantity: int = Field(..., description=\"Physical available stock units at the target branch.\")\n    is_available: bool = Field(..., description=\"Boolean indicating whether item is in-stock and active.\")"
+    },
+    {
+      "name": "RecommendationModelMetadata",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\recommendation_system\\api\\schemas.py",
+      "definition": "class RecommendationModelMetadata(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\")\n\n    model_name: str = Field(..., description=\"Recommendation model name.\")\n    version: str = Field(..., description=\"Semantic version of recommendation artifact.\")\n    algorithms_used: list[str] = Field(..., description=\"List of algorithms contributing to recommendation.\")\n    context: str = Field(..., description=\"Evaluated recommendation context.\")\n    total_candidates_scored: int = Field(..., description=\"Number of candidate items evaluated before filtering.\")\n    training_date_range: dict[str, str] = Field(default_factory=dict, description=\"Date bounds of training data.\")"
+    },
+    {
+      "name": "RecommendationResponse",
+      "source": "technova-pos-ai\\src\\technova_ai_service\\features\\recommendation_system\\api\\schemas.py",
+      "definition": "class RecommendationResponse(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\")\n\n    context: RecommendationContext = Field(..., description=\"Recommendation context processed.\")\n    organization_id: str = Field(..., description=\"Tenant organization identifier.\")\n    branch_id: str | None = Field(default=None, description=\"Target branch identifier if scoped.\")\n    recommendations: list[RecommendedProduct] = Field(\n        ...,\n        description=\"Ranked list of product recommendations ordered by score descending.\",\n    )\n    generated_at: str = Field(..., description=\"ISO 8601 UTC timestamp of inference execution.\")\n    model_metadata: RecommendationModelMetadata = Field(\n        ...,\n        description=\"Model configuration and provenance metadata.\",\n    )"
+    }
+  ]
+}

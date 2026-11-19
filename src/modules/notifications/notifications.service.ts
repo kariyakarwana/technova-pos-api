@@ -17,6 +17,7 @@ import {
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import nodemailer from 'nodemailer';
+import { smtpOptions } from '../../common/config/smtp';
 import { paginate } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import {
@@ -768,6 +769,7 @@ export class NotificationsService {
             recipientUserId: userId,
             eventType: 'BILLING_PAYMENT_REMINDER',
             title,
+            message: { contains: `#${inv.invoiceNumber}` },
           },
           select: { id: true },
         });
@@ -827,6 +829,11 @@ export class NotificationsService {
     return { read: result.count };
   }
   async processPending(limit = 20) {
+    // A crashed worker may have reached the provider. Never blindly resend an uncertain delivery.
+    await this.prisma.notificationOutbox.updateMany({
+      where: { status: OutboxStatus.PROCESSING, updatedAt: { lt: new Date(Date.now() - 10 * 60000) } },
+      data: { status: OutboxStatus.DEAD_LETTER, lastError: 'Interrupted delivery; reconcile with provider before retry.' },
+    });
     const rows = await this.prisma.notificationOutbox.findMany({
       where: {
         channel: {
@@ -852,6 +859,7 @@ export class NotificationsService {
         data: { status: OutboxStatus.PROCESSING },
       });
       if (!claimed.count) continue;
+      let providerAccepted = false;
       try {
         const targetOrgId = row.template?.organizationId ?? row.domainEvent?.organizationId ?? undefined;
         const providerId = await this.deliver(
@@ -863,6 +871,7 @@ export class NotificationsService {
           row.domainEvent?.payload,
           targetOrgId,
         );
+        providerAccepted = true;
         await this.prisma.$transaction([
           this.prisma.deliveryAttempt.create({
             data: {
@@ -897,9 +906,9 @@ export class NotificationsService {
             where: { id: row.id },
             data: {
               status:
-                attempts >= 5 ? OutboxStatus.DEAD_LETTER : OutboxStatus.FAILED,
+                providerAccepted || attempts >= 5 ? OutboxStatus.DEAD_LETTER : OutboxStatus.FAILED,
               attemptCount: { increment: 1 },
-              lastError: message,
+              lastError: providerAccepted ? `Provider accepted message; reconcile before retry: ${message}` : message,
               nextAttemptAt: new Date(
                 Date.now() + Math.min(60, 2 ** attempts) * 60_000,
               ),
@@ -972,58 +981,30 @@ export class NotificationsService {
       update: {},
     });
   }
-  private async deliver(
+  private async deliver(channel: NotificationChannel, to: string, subject: string | null, body: string, eventType?: string, payload?: Prisma.JsonValue, organizationId?: string) {
+    let refund: (() => Promise<void>) | undefined;
+    if (organizationId) {
+      const metric = channel === NotificationChannel.EMAIL ? 'emailsSent'
+        : channel === NotificationChannel.WHATSAPP && ['PROMOTION_STARTED','PROMOTION_LAUNCH'].includes(eventType ?? '') ? 'whatsAppMarketingSent'
+        : channel === NotificationChannel.WHATSAPP ? 'whatsAppBillsSent' : null;
+      if (metric) refund = await this.quota.reserveUsage(organizationId, metric);
+    }
+    try { return await this.deliverUnmetered(channel, to, subject, body, eventType, payload); }
+    catch(error) { if (refund) await refund(); throw error; }
+  }
+  private async deliverUnmetered(
     channel: NotificationChannel,
     to: string,
     subject: string | null,
     body: string,
     eventType?: string,
     payload?: Prisma.JsonValue,
-    organizationId?: string,
   ) {
     if (channel === NotificationChannel.EMAIL) {
-      if (organizationId) {
-        const check = await this.quota.canSendEmail(organizationId);
-        if (!check.allowed) {
-          return 'SKIPPED_EMAIL_QUOTA_EXCEEDED';
-        }
-      }
 
-      // 3-Method Dynamic SMTP: Check if tenant has BYO-SMTP configured
-      const tenantEmail = organizationId
-        ? await this.prisma.tenantEmailConfig.findUnique({ where: { organizationId } })
-        : null;
-
-      let transporter;
-      let fromAddress: string;
-
-      if (tenantEmail?.providerType === 'TENANT_CUSTOM_SMTP' && tenantEmail.smtpHost && tenantEmail.smtpUser) {
-        // Method 2: Tenant BYO-SMTP
-        transporter = nodemailer.createTransport({
-          host: tenantEmail.smtpHost,
-          port: Number(tenantEmail.smtpPort ?? 587),
-          secure: Boolean(tenantEmail.smtpSecure),
-          auth: {
-            user: tenantEmail.smtpUser,
-            pass: tenantEmail.smtpPassword ?? '',
-          },
-        });
-        fromAddress = tenantEmail.fromEmail
-          ? (tenantEmail.fromName ? `"${tenantEmail.fromName}" <${tenantEmail.fromEmail}>` : tenantEmail.fromEmail)
-          : this.config.getOrThrow('SMTP_FROM');
-      } else {
-        // Method 1: Platform Default SMTP (Google Workspace Starter)
-        transporter = nodemailer.createTransport({
-          host: this.config.getOrThrow('SMTP_HOST'),
-          port: Number(this.config.get('SMTP_PORT') ?? 587),
-          secure: false,
-          auth: {
-            user: this.config.getOrThrow('SMTP_USER'),
-            pass: this.config.getOrThrow('SMTP_PASSWORD'),
-          },
-        });
-        fromAddress = this.config.getOrThrow('SMTP_FROM');
-      }
+      // V1 uses only the operator-managed VPS SMTP settings.
+      const transporter = nodemailer.createTransport(smtpOptions(this.config));
+      const fromAddress = this.config.getOrThrow<string>('SMTP_FROM');
 
       const result = await transporter.sendMail({
         from: fromAddress,
@@ -1033,22 +1014,9 @@ export class NotificationsService {
         text: this.emailText(body),
       });
 
-      if (organizationId) {
-        await this.quota.recordEmailSent(organizationId);
-      }
       return result.messageId;
     }
     if (channel === NotificationChannel.WHATSAPP) {
-      if (organizationId) {
-        if (eventType === 'SALE_COMPLETED') {
-          const check = await this.quota.canSendWhatsAppBill(organizationId);
-          if (!check.allowed) {
-            return 'SKIPPED_WHATSAPP_BILL_QUOTA_EXCEEDED';
-          }
-        } else if (eventType === 'PROMOTION_LAUNCH') {
-          await this.quota.checkWhatsAppMarketingAllowed(organizationId, 1);
-        }
-      }
       const provider = (
         this.config.get<string>('WHATSAPP_PROVIDER') ?? 'meta'
       ).toLowerCase();

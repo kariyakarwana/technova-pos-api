@@ -10,15 +10,17 @@ export function generateSignedResourceToken(
   resourceId: string,
   tenantId: string,
   secretKey: string,
+  expiresAt = Math.floor(Date.now() / 1000) + 30 * 86400,
 ): string {
-  if (!resourceId || !tenantId || !secretKey) {
+  if (!resourceId || !tenantId || secretKey.length < 32) {
     throw new Error('resourceId, tenantId, and secretKey are required.');
   }
 
-  return createHmac('sha256', secretKey)
-    .update(`${resourceId}:${tenantId}`)
+  const signature = createHmac('sha256', secretKey)
+    .update(`v1:${resourceId}:${tenantId}:${expiresAt}`)
     .digest('hex')
     .slice(0, 32);
+  return `v1.${expiresAt}.${signature}`;
 }
 
 /**
@@ -35,7 +37,11 @@ export function verifySignedResourceToken(
   }
 
   try {
-    const expected = generateSignedResourceToken(resourceId, tenantId, secretKey);
+    const parts = token.split('.');
+    if (parts.length !== 3 || parts[0] !== 'v1' || !/^\d{10}$/.test(parts[1])) return false;
+    const expiresAt = Number(parts[1]);
+    if (expiresAt <= Math.floor(Date.now() / 1000)) return false;
+    const expected = generateSignedResourceToken(resourceId, tenantId, secretKey, expiresAt);
     const tokenBuffer = Buffer.from(token, 'utf8');
     const expectedBuffer = Buffer.from(expected, 'utf8');
 

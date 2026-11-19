@@ -1,3 +1,8 @@
+import { assertPlanCapacity } from '../subscriptions/plan-capacity';
+import { PaginationDto, paginate } from '../../common/dto/pagination.dto';
+import { nextBillingDate } from '../subscriptions/billing-policy';
+import { invoiceSnapshot } from '../subscriptions/invoice-snapshot';
+import { BillingLifecycleService } from '../subscriptions/billing-lifecycle.service';
 import {
   BadRequestException,
   ConflictException,
@@ -46,19 +51,24 @@ export class PlatformAdminService {
     private readonly audit: AuditService,
     private readonly auth: AuthService,
     private readonly quota: QuotaService,
+    private readonly billing: BillingLifecycleService,
   ) {}
 
   /**
    * Lists all organizations with active plan, branch count, user count,
    * live quota metrics, and billing health.
    */
-  async listOrganizations() {
+  async listOrganizations(query: PaginationDto = new PaginationDto()) {
     const orgs = await this.prisma.organization.findMany({
+        skip: query.skip, take: query.pageSize,
       include: {
         branches: {
+          take: 100,
           select: { id: true, name: true, code: true, status: true },
         },
         users: {
+          take: 1,
+          where: { user: { roles: { some: { role: { name: 'SUPER_ADMIN' } } } } },
           include: {
             user: {
               select: {
@@ -152,7 +162,7 @@ export class PlatformAdminService {
       });
     }
 
-    return results;
+    return paginate(results, await this.prisma.organization.count(), query);
   }
 
   /**
@@ -168,7 +178,7 @@ export class PlatformAdminService {
       where: { code: dto.planCode.toUpperCase() },
     });
 
-    if (!plan) {
+    if (!plan || !plan.isActive) {
       throw new NotFoundException(`Plan with code '${dto.planCode}' not found.`);
     }
 
@@ -187,7 +197,7 @@ export class PlatformAdminService {
     const passwordHash = await hash(tempPassword, 12);
 
     let superAdminRole = await this.prisma.role.findUnique({
-      where: { name: 'SUPER_ADMIN' },
+      where: { scope_name: { scope: 'GLOBAL', name: 'SUPER_ADMIN' } },
     });
 
     if (!superAdminRole) {
@@ -203,7 +213,7 @@ export class PlatformAdminService {
     const branchCode = (dto.branchCode || 'MAIN').trim().toUpperCase();
     const branchName = dto.branchName || 'Main Branch';
     const now = new Date();
-    const periodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const periodEnd = nextBillingDate(now);
 
     const subtotal = new Prisma.Decimal(plan.priceUsd);
     const vatRate = new Prisma.Decimal(plan.vatRate);
@@ -267,6 +277,7 @@ export class PlatformAdminService {
           organizationId: org.id,
           planId: plan.id,
           status: 'ACTIVE',
+          billingAnchorDay: now.getUTCDate(),
           currentPeriodStart: now,
           currentPeriodEnd: periodEnd,
         },
@@ -276,13 +287,14 @@ export class PlatformAdminService {
       const invoice = await tx.subscriptionInvoice.create({
         data: {
           subscriptionId: sub.id,
+          ...await invoiceSnapshot(tx, sub.id, undefined, undefined, plan),
           invoiceNumber,
           subtotalUsd: subtotal,
           vatAmountUsd: vatAmount,
           totalAmountUsd: totalAmount,
           status: 'PENDING',
           dueDate: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
-          notes: `Initial subscription invoice for ${plan.name} (excl. VAT: $${plan.priceUsd}, 18% VAT: $${vatAmount})`,
+          notes: `Initial subscription invoice for ${plan.name} (excl. VAT: $${plan.priceUsd}, VAT: ${vatAmount})`,
         },
       });
 
@@ -400,7 +412,7 @@ export class PlatformAdminService {
       where: { code: dto.planCode.toUpperCase() },
     });
 
-    if (!plan) {
+    if (!plan || !plan.isActive) {
       throw new NotFoundException(`Plan '${dto.planCode}' not found.`);
     }
 
@@ -414,17 +426,20 @@ export class PlatformAdminService {
     const totalAmount = subtotal.add(vatAmount).toDecimalPlaces(2);
     const invoiceNumber = `INV-${plan.code}-${Date.now().toString(36).toUpperCase()}`;
 
+    const { updatedSub, newInvoice } = await this.prisma.$transaction(async tx => {
+    await assertPlanCapacity(tx, organizationId, plan);
     let activeSubId: string;
     let updatedSub: any;
 
     if (!subscription) {
       const now = new Date();
-      const periodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-      updatedSub = await this.prisma.subscription.create({
+      const periodEnd = nextBillingDate(now);
+      updatedSub = await tx.subscription.create({
         data: {
           organizationId,
           planId: plan.id,
           status: 'ACTIVE',
+          billingAnchorDay: now.getUTCDate(),
           currentPeriodStart: now,
           currentPeriodEnd: periodEnd,
         },
@@ -432,20 +447,21 @@ export class PlatformAdminService {
       });
       activeSubId = updatedSub.id;
     } else {
-      updatedSub = await this.prisma.subscription.update({
+      updatedSub = await tx.subscription.update({
         where: { id: subscription.id },
         data: {
           planId: plan.id,
-          status: 'ACTIVE',
+          status: subscription.status,
         },
         include: { plan: true },
       });
       activeSubId = subscription.id;
     }
 
-    const newInvoice = await this.prisma.subscriptionInvoice.create({
+    const newInvoice = await tx.subscriptionInvoice.create({
       data: {
         subscriptionId: activeSubId,
+        ...await invoiceSnapshot(tx, activeSubId, undefined, undefined, plan),
         invoiceNumber,
         subtotalUsd: subtotal,
         vatAmountUsd: vatAmount,
@@ -454,6 +470,9 @@ export class PlatformAdminService {
         dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         notes: `Plan assigned/changed to ${plan.name}`,
       },
+    });
+
+      return { updatedSub, newInvoice };
     });
 
     await this.audit.record({
@@ -511,6 +530,7 @@ export class PlatformAdminService {
   ) {
     const subscription = await this.prisma.subscription.findUnique({
       where: { organizationId },
+      include: { plan: true },
     });
 
     if (!subscription) {
@@ -525,7 +545,7 @@ export class PlatformAdminService {
       where: { code: packCode },
     });
 
-    if (!pack) {
+    if (!pack || !pack.isActive) {
       throw new NotFoundException(`Add-on pack '${dto.type}' not found in catalog.`);
     }
 
@@ -545,7 +565,7 @@ export class PlatformAdminService {
       updateData = { extraAiRequests: { increment: totalUnits } };
     }
 
-    const [updatedSub, addon] = await this.prisma.$transaction([
+    const [updatedSub, addon, invoice] = await this.prisma.$transaction([
       Object.keys(updateData).length > 0
         ? this.prisma.subscription.update({
             where: { id: subscription.id },
@@ -559,11 +579,23 @@ export class PlatformAdminService {
           type: pack.code,
           quantity: dto.quantity,
           grantedUnits: totalUnits,
+          expiresAt: subscription.currentPeriodEnd,
           priceUsd: totalPrice,
           features: pack.features ?? [],
           isActive: true,
         },
       }),
+      this.prisma.subscriptionInvoice.create({ data: {
+        subscriptionId: subscription.id,
+        ...await invoiceSnapshot(this.prisma, subscription.id, undefined, undefined, subscription.plan),
+        invoiceNumber: 'ADDON-' + randomBytes(12).toString('hex'),
+        subtotalUsd: totalPrice,
+        vatAmountUsd: totalPrice.mul(subscription.plan.vatRate).toDecimalPlaces(2),
+        totalAmountUsd: totalPrice.mul(new Prisma.Decimal(1).add(subscription.plan.vatRate)).toDecimalPlaces(2),
+        dueDate: new Date(Date.now() + 7 * 86400000),
+        notes: 'Allocated ' + dto.quantity + 'x ' + pack.name,
+        lineItems: [{ description: pack.name, quantity: dto.quantity, amountUsd: totalPrice.toString() }],
+      } }),
     ]);
 
     await this.audit.record({
@@ -583,6 +615,7 @@ export class PlatformAdminService {
       message: `Allocated ${dto.quantity}x ${pack.name} successfully.`,
       subscription: updatedSub,
       addon,
+      invoice,
     };
   }
 
@@ -608,9 +641,10 @@ export class PlatformAdminService {
       throw new NotFoundException('Invoice not found.');
     }
 
+    if (!['PENDING','OVERDUE'].includes(invoice.status)) throw new BadRequestException('Only an unpaid invoice can be settled.');
     const updatedInvoice = await this.prisma.$transaction(async (tx) => {
-      const inv = await tx.subscriptionInvoice.update({
-        where: { id: invoiceId },
+      const claimed = await tx.subscriptionInvoice.updateMany({
+        where: { id: invoiceId, status: { in: ['PENDING', 'OVERDUE'] } },
         data: {
           status: 'PAID',
           paidAt: new Date(),
@@ -620,16 +654,14 @@ export class PlatformAdminService {
         },
       });
 
-      // Reactivate subscription and organization if suspended
-      await tx.subscription.update({
-        where: { id: invoice.subscriptionId },
+      // Recover billing delinquency only. Administrative suspension requires a separate action.
+      if (claimed.count !== 1) throw new ConflictException('Invoice has already been settled.');
+      const inv = await tx.subscriptionInvoice.findUniqueOrThrow({ where: { id: invoiceId } });
+      await tx.subscription.updateMany({
+        where: { id: invoice.subscriptionId, status: 'PAST_DUE', invoices: { none: { status: { in: ['PENDING', 'OVERDUE'] }, dueDate: { lt: new Date() } } } },
         data: { status: 'ACTIVE' },
       });
 
-      await tx.organization.update({
-        where: { id: invoice.subscription.organizationId },
-        data: { status: RecordStatus.ACTIVE },
-      });
 
       return inv;
     });
@@ -670,100 +702,52 @@ export class PlatformAdminService {
       where: { createdAt: { gte: startOfMonth } },
     });
 
-    const subscriptions = await this.prisma.subscription.findMany({
-      where: { status: 'ACTIVE' },
-      include: { plan: true },
-    });
-
-    let totalMrrUsd = 0;
-    const planCounts: Record<string, number> = {
-      ENTERPRISE: 0,
-      PROFESSIONAL: 0,
-      STANDARD: 0,
-      BASIC: 0,
-    };
-
-    for (const sub of subscriptions) {
-      totalMrrUsd += Number(sub.plan.priceUsd);
-      const code = sub.plan.code.toUpperCase();
-      planCounts[code] = (planCounts[code] ?? 0) + 1;
-    }
-
-    const periodYear = now.getUTCFullYear();
-    const periodMonth = now.getUTCMonth() + 1;
-
-    const usages = await this.prisma.organizationUsage.findMany({
-      where: { periodYear, periodMonth },
-    });
-
-    let totalWhatsAppBillsSent = 0;
-    let totalWhatsAppMarketingSent = 0;
-    let totalEmailsSent = 0;
-    let totalAiRequestsUsed = 0;
-
-    for (const u of usages) {
-      totalWhatsAppBillsSent += u.whatsAppBillsSent;
-      totalWhatsAppMarketingSent += u.whatsAppMarketingSent;
-      totalEmailsSent += u.emailsSent;
-      totalAiRequestsUsed += u.aiRequestsUsed;
-    }
+    const planGroups = await this.prisma.subscription.groupBy({ by: ['planId'], where: { status: 'ACTIVE' }, _count: { id: true } });
+    const allPlans = await this.prisma.plan.findMany({ orderBy: { priceUsd: 'desc' } });
+    const planDistribution = allPlans.map(p => ({ code: p.code, name: p.name, count: planGroups.find(g => g.planId === p.id)?._count.id ?? 0 }));
+    const activeSubscriptionsCount = planGroups.reduce((sum, g) => sum + g._count.id, 0);
+    const totalMrrUsd = allPlans.reduce((sum, p) => sum + Number(p.priceUsd) * (planGroups.find(g => g.planId === p.id)?._count.id ?? 0), 0);
+    const usage = await this.prisma.subscriptionUsage.aggregate({ where: { periodStart: { lte: now }, periodEnd: { gt: now } }, _sum: { emailsSent: true, whatsAppBillsSent: true, whatsAppMarketingSent: true, aiRequestsUsed: true } });
+    const totalWhatsAppBillsSent = usage._sum.whatsAppBillsSent ?? 0;
+    const totalWhatsAppMarketingSent = usage._sum.whatsAppMarketingSent ?? 0;
+    const totalEmailsSent = usage._sum.emailsSent ?? 0;
+    const totalAiRequestsUsed = usage._sum.aiRequestsUsed ?? 0;
 
     // Compute 7-day rolling POS transaction activity across all tenants
     const todayEnd = new Date(now);
-    todayEnd.setHours(23, 59, 59, 999);
+    todayEnd.setUTCHours(23, 59, 59, 999);
     const sevenDaysAgo = new Date(todayEnd);
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-    sevenDaysAgo.setHours(0, 0, 0, 0);
+    sevenDaysAgo.setUTCDate(sevenDaysAgo.getUTCDate() - 6);
+    sevenDaysAgo.setUTCHours(0, 0, 0, 0);
 
     const prevWeekStart = new Date(sevenDaysAgo);
-    prevWeekStart.setDate(prevWeekStart.getDate() - 7);
+    prevWeekStart.setUTCDate(prevWeekStart.getUTCDate() - 7);
 
-    const [recentSales, prevWeekCount] = await Promise.all([
-      this.prisma.sale.findMany({
-        where: { createdAt: { gte: sevenDaysAgo, lte: todayEnd } },
-        select: { createdAt: true, total: true },
-      }),
-      this.prisma.sale.count({
-        where: { createdAt: { gte: prevWeekStart, lt: sevenDaysAgo } },
-      }),
+    const [saleDays, prevWeekCount] = await Promise.all([
+      this.prisma.$queryRaw<Array<{ day: Date; count: bigint; volume: Prisma.Decimal }>>        `SELECT date_trunc('day', "createdAt") AS day, count(*) AS count, COALESCE(sum(total),0) AS volume FROM sales WHERE "createdAt" >= ${sevenDaysAgo} AND "createdAt" <= ${todayEnd} GROUP BY 1 ORDER BY 1`,
+      this.prisma.sale.count({ where: { createdAt: { gte: prevWeekStart, lt: sevenDaysAgo } } }),
     ]);
 
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const dailyBuckets: Array<{ dateKey: string; day: string; count: number; volume: number }> = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(sevenDaysAgo);
-      d.setDate(sevenDaysAgo.getDate() + i);
+      d.setUTCDate(sevenDaysAgo.getUTCDate() + i);
       const key = d.toISOString().slice(0, 10);
       dailyBuckets.push({
         dateKey: key,
-        day: dayNames[d.getDay()],
+        day: dayNames[d.getUTCDay()],
         count: 0,
         volume: 0,
       });
     }
 
-    for (const s of recentSales) {
-      const key = s.createdAt.toISOString().slice(0, 10);
-      const bucket = dailyBuckets.find((b) => b.dateKey === key);
-      if (bucket) {
-        bucket.count += 1;
-        bucket.volume += Number(s.total);
-      }
+    for (const saleDay of saleDays) {
+      const bucket = dailyBuckets.find(b => b.dateKey === saleDay.day.toISOString().slice(0, 10));
+      if (bucket) { bucket.count = Number(saleDay.count); bucket.volume = Number(saleDay.volume); }
     }
-
-    const totalWeeklyTxns = recentSales.length;
+    const totalWeeklyTxns = saleDays.reduce((sum, day) => sum + Number(day.count), 0);
     const avgDailyTxns = Number((totalWeeklyTxns / 7).toFixed(1));
-
-    const allPlans = await this.prisma.plan.findMany({
-      include: { _count: { select: { subscriptions: true } } },
-      orderBy: { priceUsd: 'desc' },
-    });
-
-    const planDistribution = allPlans.map((p) => ({
-      code: p.code,
-      name: p.name,
-      count: planCounts[p.code.toUpperCase()] ?? p._count.subscriptions,
-    }));
 
     return {
       tenants: {
@@ -774,11 +758,11 @@ export class PlatformAdminService {
       },
       financials: {
         totalMrrUsd,
-        activeSubscriptionsCount: subscriptions.length,
+        activeSubscriptionsCount,
         planDistribution,
       },
       currentMonthConsumption: {
-        period: `${periodYear}-${String(periodMonth).padStart(2, '0')}`,
+        period: 'Current subscription periods',
         totalWhatsAppBillsSent,
         totalWhatsAppMarketingSent,
         totalEmailsSent,
@@ -796,8 +780,9 @@ export class PlatformAdminService {
   /**
    * Lists recent platform subscription invoices across all tenants.
    */
-  async listInvoices() {
+  async listInvoices(query: PaginationDto = new PaginationDto()) {
     const invoices = await this.prisma.subscriptionInvoice.findMany({
+        skip: query.skip, take: query.pageSize,
       include: {
         subscription: {
           include: {
@@ -807,17 +792,19 @@ export class PlatformAdminService {
         },
       },
       orderBy: { issuedDate: 'desc' },
-      take: 50,
     });
 
-    return invoices.map((inv) => ({
+    const mapped = invoices.map((inv) => ({
       id: inv.id,
       invoiceNumber: inv.invoiceNumber,
       organizationId: inv.subscription.organization.id,
-      organizationName: inv.subscription.organization.name,
-      organizationEmail: inv.subscription.organization.email,
-      planName: inv.subscription.plan.name,
-      planCode: inv.subscription.plan.code,
+      organizationName: (inv.customerSnapshot as { name?: string } | null)?.name ?? inv.subscription.organization.name,
+      organizationEmail: (inv.customerSnapshot as { email?: string } | null)?.email ?? inv.subscription.organization.email,
+      planName: (inv.customerSnapshot as { planName?: string } | null)?.planName ?? inv.subscription.plan.name,
+      planCode: (inv.customerSnapshot as { planCode?: string } | null)?.planCode ?? inv.subscription.plan.code,
+      currency: inv.currency,
+      vatRateSnapshot: inv.vatRateSnapshot === null ? null : Number(inv.vatRateSnapshot),
+      periodStart: inv.periodStart, periodEnd: inv.periodEnd, lineItems: inv.lineItems,
       subtotalUsd: Number(inv.subtotalUsd),
       vatAmountUsd: Number(inv.vatAmountUsd),
       totalAmountUsd: Number(inv.totalAmountUsd),
@@ -828,21 +815,22 @@ export class PlatformAdminService {
       paymentMethod: inv.paymentMethod,
       paymentRef: inv.paymentRef,
     }));
+    return paginate(mapped, await this.prisma.subscriptionInvoice.count(), query);
   }
 
   /**
    * Lists recent platform & security audit events.
    */
-  async listAuditLogs() {
+  async listAuditLogs(query: PaginationDto = new PaginationDto()) {
     const events = await this.prisma.auditEvent.findMany({
+        skip: query.skip, take: query.pageSize,
       include: {
         user: { select: { email: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
-      take: 50,
     });
 
-    return events.map((ev) => ({
+    const mapped = events.map((ev) => ({
       id: ev.id,
       action: ev.action,
       outcome: ev.outcome,
@@ -851,6 +839,7 @@ export class PlatformAdminService {
       metadata: ev.metadata,
       createdAt: ev.createdAt,
     }));
+    return paginate(mapped, await this.prisma.auditEvent.count(), query);
   }
 
   /**
@@ -911,7 +900,7 @@ export class PlatformAdminService {
     }
 
     let superAdminRole = await this.prisma.role.findUnique({
-      where: { name: 'SUPER_ADMIN' },
+      where: { scope_name: { scope: 'GLOBAL', name: 'SUPER_ADMIN' } },
     });
 
     if (!superAdminRole) {
@@ -1613,10 +1602,11 @@ export class PlatformAdminService {
   /**
    * Lists tenant plan-change and add-on pack requests ordered with PENDING first.
    */
-  async listSubscriptionRequests() {
+  async listSubscriptionRequests(query: PaginationDto = new PaginationDto()) {
     await this.ensureDefaultAddonPacks();
     const [requests, plans, addonPacks] = await Promise.all([
       this.prisma.subscriptionRequest.findMany({
+        skip: query.skip, take: query.pageSize,
         include: {
           organization: {
             select: { id: true, name: true, email: true },
@@ -1628,7 +1618,6 @@ export class PlatformAdminService {
           },
         },
         orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
-        take: 100,
       }),
       this.prisma.plan.findMany({
         select: { code: true, name: true, priceUsd: true, priceWithVatUsd: true },
@@ -1641,7 +1630,7 @@ export class PlatformAdminService {
     const planMap = new Map(plans.map((p) => [p.code.toUpperCase(), p]));
     const addonMap = new Map(addonPacks.map((a) => [a.code.toUpperCase(), a]));
 
-    return requests.map((r) => {
+    const mapped = requests.map((r) => {
       const targetPlan = r.targetPlanCode ? planMap.get(r.targetPlanCode.toUpperCase()) : undefined;
       const addonPack = r.addonCode ? addonMap.get(r.addonCode.toUpperCase()) : undefined;
       return {
@@ -1669,6 +1658,7 @@ export class PlatformAdminService {
         createdAt: r.createdAt,
       };
     });
+    return paginate(mapped, await this.prisma.subscriptionRequest.count(), query);
   }
 
   /**
@@ -1701,7 +1691,7 @@ export class PlatformAdminService {
 
     if (dto.action === 'REJECT') {
       const rejected = await this.prisma.subscriptionRequest.update({
-        where: { id: requestId },
+        where: { id: requestId, status: 'PENDING' },
         data: {
           status: 'REJECTED',
           reviewNotes: dto.reviewNotes?.trim() || null,
@@ -1742,7 +1732,7 @@ export class PlatformAdminService {
       const targetPlan = await this.prisma.plan.findUnique({
         where: { code: req.targetPlanCode.toUpperCase() },
       });
-      if (!targetPlan) {
+      if (!targetPlan || !targetPlan.isActive) {
         throw new NotFoundException(`Plan '${req.targetPlanCode}' not found.`);
       }
 
@@ -1753,24 +1743,22 @@ export class PlatformAdminService {
       const invoiceNumber = `INV-${targetPlan.code}-${Date.now().toString(36).toUpperCase()}`;
 
       const result = await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.subscriptionRequest.updateMany({ where: { id: requestId, status: 'PENDING' }, data: { status: 'APPROVED' } });
+        if (claimed.count !== 1) throw new ConflictException('Request has already been reviewed.');
         await tx.subscription.update({
           where: { id: req.subscriptionId },
           data: {
             planId: targetPlan.id,
-            status: 'ACTIVE',
-            currentPeriodStart: now,
-            currentPeriodEnd: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+            status: req.subscription.status === 'SUSPENDED' ? 'SUSPENDED' : req.subscription.status === 'PAST_DUE' ? 'PAST_DUE' : 'ACTIVE',
+
           },
         });
 
-        await tx.organization.update({
-          where: { id: req.organizationId },
-          data: { status: RecordStatus.ACTIVE },
-        });
 
         const invoice = await tx.subscriptionInvoice.create({
           data: {
             subscriptionId: req.subscriptionId,
+            ...await invoiceSnapshot(tx, req.subscriptionId, undefined, undefined, targetPlan),
             invoiceNumber,
             subtotalUsd: subtotal,
             vatAmountUsd: vatAmount,
@@ -1827,13 +1815,13 @@ export class PlatformAdminService {
     const pack = await this.prisma.addonPack.findUnique({
       where: { code: req.addonCode.toUpperCase() },
     });
-    if (!pack) {
+    if (!pack || !pack.isActive) {
       throw new NotFoundException(`Add-on pack '${req.addonCode}' not found.`);
     }
 
     const totalUnits = pack.unitsPerPack * req.quantity;
     const subtotal = new Prisma.Decimal(Number(pack.priceUsd) * req.quantity);
-    const vatAmount = subtotal.mul(new Prisma.Decimal(0.18)).toDecimalPlaces(2);
+    const vatAmount = subtotal.mul(req.subscription.plan.vatRate).toDecimalPlaces(2);
     const totalAmount = subtotal.add(vatAmount).toDecimalPlaces(2);
     const invoiceNumber = `ADDON-${pack.code}-${Date.now().toString(36).toUpperCase()}`;
 
@@ -1851,6 +1839,8 @@ export class PlatformAdminService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.subscriptionRequest.updateMany({ where: { id: requestId, status: 'PENDING' }, data: { status: 'APPROVED' } });
+        if (claimed.count !== 1) throw new ConflictException('Request has already been reviewed.');
       if (Object.keys(quotaUpdate).length > 0) {
         await tx.subscription.update({
           where: { id: req.subscriptionId },
@@ -1865,6 +1855,7 @@ export class PlatformAdminService {
           type: pack.code,
           quantity: req.quantity,
           grantedUnits: totalUnits,
+          expiresAt: req.subscription.currentPeriodEnd,
           priceUsd: subtotal,
           features: pack.features ?? [],
           isActive: true,
@@ -1874,6 +1865,7 @@ export class PlatformAdminService {
       const invoice = await tx.subscriptionInvoice.create({
         data: {
           subscriptionId: req.subscriptionId,
+          ...await invoiceSnapshot(tx, req.subscriptionId, [{ description: pack.name, quantity: req.quantity, unitPriceUsd: pack.priceUsd.toString(), amountUsd: subtotal.toString() }], undefined, req.subscription.plan),
           invoiceNumber,
           subtotalUsd: subtotal,
           vatAmountUsd: vatAmount,
@@ -1927,137 +1919,7 @@ export class PlatformAdminService {
    * sends email notifications and registers alerts in the notification ledger.
    */
   async dispatchPaymentReminders() {
-    const pendingInvoices = await this.prisma.subscriptionInvoice.findMany({
-      where: {
-        status: { in: ['PENDING', 'OVERDUE'] },
-      },
-      include: {
-        subscription: {
-          include: {
-            organization: {
-              include: {
-                users: {
-                  include: {
-                    user: {
-                      include: {
-                        roles: {
-                          include: {
-                            role: true,
-                          },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            plan: true,
-          },
-        },
-      },
-      orderBy: { dueDate: 'asc' },
-    });
-
-    const now = new Date();
-    const msPerDay = 1000 * 60 * 60 * 24;
-
-    const dispatched: Array<{
-      invoiceId: string;
-      invoiceNumber: string;
-      organizationName: string;
-      daysRemaining: number;
-      stage: '15_DAYS' | '10_DAYS' | '5_DAYS' | '1_DAY' | 'OVERDUE' | 'OTHER';
-      emailSent: boolean;
-    }> = [];
-
-    for (const inv of pendingInvoices) {
-      const diffMs = new Date(inv.dueDate).getTime() - now.getTime();
-      const daysRemaining = Math.ceil(diffMs / msPerDay);
-
-      let stage: '15_DAYS' | '10_DAYS' | '5_DAYS' | '1_DAY' | 'OVERDUE' | 'OTHER' = 'OTHER';
-      if (daysRemaining >= 14 && daysRemaining <= 15) {
-        stage = '15_DAYS';
-      } else if (daysRemaining >= 9 && daysRemaining <= 10) {
-        stage = '10_DAYS';
-      } else if (daysRemaining >= 4 && daysRemaining <= 5) {
-        stage = '5_DAYS';
-      } else if (daysRemaining >= 0 && daysRemaining <= 1) {
-        stage = '1_DAY';
-      } else if (daysRemaining < 0) {
-        stage = 'OVERDUE';
-      }
-
-      if (stage !== 'OTHER') {
-        const org = inv.subscription.organization;
-        const tenantAdmins = org.users
-          .map((u) => u.user)
-          .filter((u) => u?.roles?.some((r) => r.role?.name === 'SUPER_ADMIN'));
-        const recipients =
-          tenantAdmins.length > 0
-            ? tenantAdmins
-            : org.users?.[0]?.user
-              ? [org.users[0].user]
-              : [];
-
-        for (const adminUser of recipients) {
-          const targetEmail = adminUser?.email || org.email;
-          const targetName = adminUser?.name || org.name;
-
-          let emailSent = false;
-          if (targetEmail) {
-            try {
-              await this.auth.sendPaymentReminderEmail(
-                targetEmail,
-                targetName,
-                org.name,
-                inv.invoiceNumber,
-                Number(inv.totalAmountUsd),
-                inv.dueDate,
-                daysRemaining,
-              );
-              emailSent = true;
-            } catch (err) {
-              this.logger.warn(
-                `Failed to send ${stage} reminder for ${inv.invoiceNumber} to ${targetEmail}`,
-                err instanceof Error ? err.stack : String(err),
-              );
-            }
-          }
-
-          if (adminUser) {
-            try {
-              await this.prisma.appNotification.create({
-                data: {
-                  organizationId: org.id,
-                  recipientUserId: adminUser.id,
-                  eventType: 'BILLING_PAYMENT_REMINDER',
-                  title: `Subscription Payment Due (${daysRemaining > 0 ? `${daysRemaining} days` : 'Overdue'})`,
-                  message: `Invoice ${inv.invoiceNumber} for $${Number(inv.totalAmountUsd).toFixed(2)} is due on ${new Date(inv.dueDate).toLocaleDateString()}. Settle via direct bank transfer or instant online payment.`,
-                  actionUrl: '/dashboard/billing',
-                },
-              });
-            } catch {
-              // Ignored
-            }
-          }
-
-          dispatched.push({
-            invoiceId: inv.id,
-            invoiceNumber: inv.invoiceNumber,
-            organizationName: org.name,
-            daysRemaining,
-            stage,
-            emailSent,
-          });
-        }
-      }
-    }
-
-    return {
-      message: `Scanned ${pendingInvoices.length} invoices; dispatched ${dispatched.length} payment reminders.`,
-      dispatchedCount: dispatched.length,
-      dispatched,
-    };
+    return this.billing.dispatchReminders();
   }
 
   /**
@@ -2144,63 +2006,22 @@ export class PlatformAdminService {
       take: 4,
     });
 
-    const tenantNotifications = recentTenants.map((t, idx) => ({
+    const tenantNotifications = recentTenants.map((t) => ({
       id: `notif-tenant-${t.id}`,
       category: 'EMPLOYEE' as const,
       title: `New Organization Provisioned: ${t.name}`,
       message: `Tenant organization '${t.name}' was successfully provisioned with Primary Branch [MAIN] and auto-generated admin credentials.`,
       createdAt: t.createdAt.toISOString(),
-      timeAgo: idx === 0 ? '2 hours ago' : 'Oct 24, 09:15',
-      isRead: idx > 1,
+      timeAgo: t.createdAt.toISOString(),
+      isRead: false,
       priority: 'NORMAL' as const,
       actionUrl: '/platform-admin?tab=organizations',
     }));
 
-    const systemUpdateNotifications = [
-      {
-        id: 'notif-sys-v482',
-        category: 'SYSTEM UPDATE' as const,
-        title: 'TechNova v4.8.2 Online Payment & Notification Engine Released',
-        message:
-          'The new platform release introduces instant Online Payment Gateway settlement, 15/10/5/1-day automated billing reminder dispatches, and the unified Alerts center.',
-        createdAt: new Date().toISOString(),
-        timeAgo: 'Yesterday, 14:30',
-        isRead: true,
-        priority: 'INFO' as const,
-        actionUrl: '/platform-admin?tab=telemetry',
-      },
-    ];
-
-    const operationsNotifications = [
-      {
-        id: 'notif-inv-01',
-        category: 'INVENTORY ALERT' as const,
-        title: 'Low Stock: Premium Thermal Receipt Rolls (80mm)',
-        message:
-          'Warehouse stock has fallen below the safety reorder threshold of 50 units. Current stock is 34 units. Dispatch reorder to supplier.',
-        createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-        timeAgo: '10 mins ago',
-        isRead: false,
-        priority: 'URGENT' as const,
-      },
-      {
-        id: 'notif-po-01',
-        category: 'PURCHASE ORDER' as const,
-        title: 'PO-2024-8832 Approved by Fleet Management',
-        message:
-          'Your purchase order for Supplier ACME Retail Logistics has been verified and approved. Dispatch transmission is ready.',
-        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-        timeAgo: '2 hours ago',
-        isRead: false,
-        priority: 'NORMAL' as const,
-      },
-    ];
 
     return [
       ...billingNotifications,
       ...subscriptionNotifications,
-      ...operationsNotifications,
-      ...systemUpdateNotifications,
       ...tenantNotifications,
     ];
   }
