@@ -1,3 +1,4 @@
+import { plansData } from './saas-catalog';
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hash } from "bcryptjs";
@@ -14,6 +15,8 @@ const prisma = new PrismaClient({
 });
 
 const permissions = [
+  { key: "billing:view", description: "View subscription billing" },
+  { key: "billing:manage", description: "Request subscription changes" },
   {
     key: "dashboard:view",
     description: "View the main dashboard",
@@ -87,6 +90,13 @@ async function main() {
 
   const password = process.env.SUPER_ADMIN_PASSWORD;
 
+  const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL?.trim().toLowerCase();
+  const platformAdminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+  if (!platformAdminEmail || !platformAdminPassword || platformAdminPassword.length < 16 || platformAdminPassword === 'PlatformAdmin#2026') {
+    throw new Error('Explicit PLATFORM_ADMIN_EMAIL and a unique password of at least 16 characters are required.');
+  }
+  if (process.env.NODE_ENV === 'production') throw new Error('Demo seed is forbidden in production. Use the reviewed SaaS bootstrap/backfill command.');
+
   if (!email) {
     throw new Error("SUPER_ADMIN_EMAIL is required.");
   }
@@ -102,9 +112,7 @@ async function main() {
   }
 
   const superAdminRole = await prisma.role.upsert({
-    where: {
-      name: "SUPER_ADMIN",
-    },
+    where: { scope_name: { scope: 'GLOBAL', name: 'SUPER_ADMIN' } },
     update: {
       description: "Full system administrator",
       isSystem: true,
@@ -117,7 +125,7 @@ async function main() {
   });
 
   const supplierRole = await prisma.role.upsert({
-    where: { name: "SUPPLIER" },
+    where: { scope_name: { scope: 'GLOBAL', name: 'SUPPLIER' } },
     update: { description: "External supplier portal user", isSystem: true },
     create: {
       name: "SUPPLIER",
@@ -126,8 +134,14 @@ async function main() {
     },
   });
 
+  const platformSuperAdminRole = await prisma.role.upsert({
+    where: { scope_name: { scope: 'GLOBAL', name: 'PLATFORM_SUPER_ADMIN' } },
+    update: { description: "Root SaaS platform owner", isSystem: true },
+    create: { name: "PLATFORM_SUPER_ADMIN", description: "Root SaaS platform owner", isSystem: true },
+  });
+
   const customerRole = await prisma.role.upsert({
-    where: { name: "CUSTOMER" },
+    where: { scope_name: { scope: 'GLOBAL', name: 'CUSTOMER' } },
     update: { description: "Customer mobile application user", isSystem: true },
     create: {
       name: "CUSTOMER",
@@ -221,6 +235,36 @@ async function main() {
     },
   });
 
+  // Seed dedicated Platform Super Admin user
+  const platformPasswordHash = await hash(platformAdminPassword, 12);
+  const platformAdmin = await prisma.user.upsert({
+    where: {
+      email: platformAdminEmail,
+    },
+    update: {},
+    create: {
+      email: platformAdminEmail,
+      name: "SaaS Platform Super Admin",
+      passwordHash: platformPasswordHash,
+      emailVerified: new Date(),
+      status: UserStatus.ACTIVE,
+    },
+  });
+
+  await prisma.userRole.upsert({
+    where: {
+      userId_roleId: {
+        userId: platformAdmin.id,
+        roleId: platformSuperAdminRole.id,
+      },
+    },
+    update: {},
+    create: {
+      userId: platformAdmin.id,
+      roleId: platformSuperAdminRole.id,
+    },
+  });
+
   const organization = await prisma.organization.upsert({
     where: { registrationNumber: "TECHNOVA-DEMO" },
     update: { name: "TechNova POS" },
@@ -308,7 +352,32 @@ async function main() {
     });
   }
 
-  console.info(`Super Admin seeded: ${email}`);
+  // Seed Commercial Plans
+
+  for (const plan of plansData) {
+    await prisma.plan.upsert({
+      where: { code: plan.code },
+      update: {},
+      create: plan,
+    });
+  }
+
+  const enterprisePlan = await prisma.plan.findUniqueOrThrow({ where: { code: "ENTERPRISE" } });
+
+  await prisma.subscription.upsert({
+    where: { organizationId: organization.id },
+    update: {},
+    create: {
+      organizationId: organization.id,
+      planId: enterprisePlan.id,
+      status: "ACTIVE",
+      currentPeriodStart: new Date(),
+      currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    },
+  });
+
+  console.info(`Platform Super Admin seeded: ${platformAdminEmail}`);
+  console.info(`Tenant Super Admin seeded: ${email}`);
 }
 
 main()

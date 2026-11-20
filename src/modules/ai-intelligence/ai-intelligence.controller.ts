@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { AiQuotaInterceptor } from './ai-quota.interceptor';
+import { Body, Controller, Get, Param, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/auth/authenticated-user';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
@@ -10,6 +11,7 @@ import { RecommendationDto } from './dto/recommendation.dto';
 
 @Controller('ai-intelligence')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseInterceptors(AiQuotaInterceptor)
 export class AiIntelligenceController {
   constructor(private readonly intelligence: AiIntelligenceService) {}
 

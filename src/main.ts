@@ -17,13 +17,29 @@ async function bootstrap(): Promise<void> {
 
   const config = app.get(ConfigService);
 
+  if ((config.get<string>('RECEIPT_SIGNING_SECRET')?.length ?? 0) < 32) throw new Error('RECEIPT_SIGNING_SECRET must contain at least 32 characters.');
   app.setGlobalPrefix('api/v1');
 
   app.use(helmet());
   app.use(cookieParser());
 
+  const configuredFrontendUrl = config.getOrThrow<string>('FRONTEND_URL');
+  const publicFrontendUrl = config.get<string>('PUBLIC_FRONTEND_URL');
+  const allowedOrigins = Array.from(
+    new Set(
+      [configuredFrontendUrl, publicFrontendUrl]
+        .filter(Boolean)
+        .flatMap((u) => u!.split(',').map((item) => item.trim())),
+    ),
+  );
+
   app.enableCors({
-    origin: config.getOrThrow<string>('FRONTEND_URL'),
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'), false);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });

@@ -1,4 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
+import { QuotaService } from '../subscriptions/quota.service';
+ 
 import {
   BadGatewayException,
   BadRequestException,
@@ -43,6 +44,7 @@ export class AiIntelligenceService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly quota: QuotaService,
     config: ConfigService,
     private readonly salesDataExtraction: SalesDataExtractionService,
     private readonly demandDataExtraction: DemandDataExtractionService,

@@ -108,6 +108,28 @@ services:
     logging: *default-logging
     networks: [technova]
 
+  saas-bootstrap:
+    image: ${BACKEND_MIGRATE_IMAGE:?BACKEND_MIGRATE_IMAGE is required}
+    command: ["npx", "tsx", "prisma/bootstrap-saas.ts", "--apply"]
+    env_file: ${TECHNOVA_ENV_FILE:-/etc/technova/production.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    profiles: [tools]
+    restart: "no"
+    logging: *default-logging
+    networks: [technova]
+
+  saas-preflight:
+    image: ${BACKEND_MIGRATE_IMAGE:?BACKEND_MIGRATE_IMAGE is required}
+    command: ["npx", "tsx", "prisma/bootstrap-saas.ts", "--check"]
+    env_file: ${TECHNOVA_ENV_FILE:-/etc/technova/production.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    profiles: [tools]
+    restart: "no"
+    logging: *default-logging
+    networks: [technova]
+
   backend:
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
     restart: unless-stopped

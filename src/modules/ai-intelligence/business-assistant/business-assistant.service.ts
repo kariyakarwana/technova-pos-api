@@ -1,3 +1,4 @@
+import { QuotaService } from '../../subscriptions/quota.service';
 import {
   Injectable,
   Logger,
@@ -19,6 +20,7 @@ export class BusinessAssistantService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly orchestrator: BusinessAssistantOrchestrator,
+    private readonly quota: QuotaService,
   ) {}
 
   async chat(user: AuthenticatedUser, dto: AssistantChatDto): Promise<AssistantChatResponseDto> {
@@ -26,6 +28,7 @@ export class BusinessAssistantService {
 
     // 1. Derive organization context exclusively from authenticated user
     const organizationId = await this.resolveOrganizationId(user.id);
+
 
     // 2. Validate branch context if specified
     if (dto.branchId) {
@@ -45,11 +48,12 @@ export class BusinessAssistantService {
     const conversationId = dto.conversationId || randomUUID();
 
     // 4. Delegate to orchestrator
+    const refund = await this.quota.reserveUsage(organizationId, 'aiRequestsUsed');
     const orchestrationResult = await this.orchestrator.orchestrate({
       message: dto.message,
       conversationId,
       context,
-    });
+    }).catch(async error => { await refund(); throw error; });
 
     const processingTimeMs = Date.now() - startTime;
 

@@ -82,7 +82,7 @@ describe('CustomersService', () => {
     expect(transaction.user.create).toHaveBeenCalledWith(
       expect.objectContaining({
         // Jest asymmetric matchers are intentionally dynamic.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+         
         data: expect.objectContaining({
           email: 'nimal@example.com',
           phone: '+94771234567',
@@ -98,7 +98,7 @@ describe('CustomersService', () => {
         phone: '+94771234567',
         userId: 'customer-user-1',
         // Jest asymmetric matchers are intentionally dynamic.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+         
         temporaryPassword: expect.any(String),
       }),
     );

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-base-to-string, @typescript-eslint/restrict-template-expressions, no-control-regex */
+/* eslint-disable no-control-regex */
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SourceReference } from '../interfaces/assistant-response.interface';
 import { GENERATIVE_AI_PROVIDER } from '../providers/generative-ai-provider.interface';

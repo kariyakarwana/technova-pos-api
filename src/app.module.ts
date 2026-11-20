@@ -11,6 +11,8 @@ import { CustomersModule } from './modules/customers/customers.module';
 import { CustomerAppModule } from './modules/customer-app/customer-app.module';
 import { CreditModule } from './modules/credit/credit.module';
 import { DiscountsModule } from './modules/discounts/discounts.module';
+import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { HealthModule } from './modules/health/health.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -62,6 +64,8 @@ import { LoyaltyModule } from './modules/loyalty/loyalty.module';
     AiIntelligenceModule,
     SalesForecastingModule,
     LoyaltyModule,
+    PlatformAdminModule,
+    SubscriptionsModule,
     HealthModule,
   ],
 })

@@ -7,7 +7,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Client } from 'minio';
+import { S3Client, HeadBucketCommand, CreateBucketCommand, PutBucketPolicyCommand, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 
@@ -30,7 +31,7 @@ export type StoredObject = {
 @Injectable()
 export class StorageService implements OnModuleInit {
   private readonly logger = new Logger(StorageService.name);
-  private readonly client: Client;
+  private readonly client: S3Client;
   private readonly publicBucket: string;
   private readonly publicUrl: string;
 
@@ -54,16 +55,16 @@ export class StorageService implements OnModuleInit {
       this.config.get<string>('MINIO_PUBLIC_URL') ??
       `${useSSL ? 'https' : 'http'}://${parsed.hostname}:${port}`
     ).replace(/\/$/, '');
-    this.client = new Client({
-      endPoint: parsed.hostname,
-      port,
-      useSSL,
-      accessKey:
-        this.config.get<string>('MINIO_ACCESS_KEY') ??
-        this.config.getOrThrow<string>('MINIO_ROOT_USER'),
-      secretKey:
-        this.config.get<string>('MINIO_SECRET_KEY') ??
-        this.config.getOrThrow<string>('MINIO_ROOT_PASSWORD'),
+    this.client = new S3Client({
+      endpoint:         (useSSL ? 'https' : 'http') + '://' + parsed.hostname + ':' + port,
+      region: this.config.get<string>('MINIO_REGION') ?? 'us-east-1',
+      forcePathStyle: true,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+      credentials: {
+        accessKeyId: this.config.get<string>('MINIO_ACCESS_KEY') ?? this.config.getOrThrow<string>('MINIO_ROOT_USER'),
+        secretAccessKey: this.config.get<string>('MINIO_SECRET_KEY') ?? this.config.getOrThrow<string>('MINIO_ROOT_PASSWORD'),
+      },
     });
   }
 
@@ -141,7 +142,7 @@ export class StorageService implements OnModuleInit {
   async remove(bucket: string | null, objectKey: string | null) {
     if (!bucket || !objectKey) return;
     try {
-      await this.client.removeObject(bucket, objectKey);
+      await this.client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
     } catch (error) {
       this.logger.warn(
         `Unable to remove orphaned object ${objectKey}. ${error instanceof Error ? error.message : ''}`,
@@ -151,14 +152,16 @@ export class StorageService implements OnModuleInit {
 
   async open(bucket: string, objectKey: string) {
     try {
-      return await this.client.getObject(bucket, objectKey);
+      const response = await this.client.send(new GetObjectCommand({ Bucket: bucket, Key: objectKey }));
+      if (!(response.Body instanceof Readable)) throw new Error('Storage returned no readable body.');
+      return response.Body;
     } catch (error) {
       const normalizedError: unknown = error;
       const code =
         normalizedError &&
         typeof normalizedError === 'object' &&
-        'code' in normalizedError
-          ? String((normalizedError as Record<string, unknown>).code)
+        'name' in normalizedError
+          ? String((normalizedError as Record<string, unknown>).name)
           : '';
       if (code === 'NoSuchKey' || code === 'NotFound') {
         throw new NotFoundException('The requested media file was not found.');
@@ -181,13 +184,7 @@ export class StorageService implements OnModuleInit {
       .replace(/[^.a-z0-9]/g, '');
     const objectKey = `${root}/${ownerId}/${folder}/${randomUUID()}${extension}`;
     try {
-      await this.client.putObject(
-        this.publicBucket,
-        objectKey,
-        file.buffer,
-        file.size,
-        { 'Content-Type': file.mimetype },
-      );
+      await this.client.send(new PutObjectCommand({ Bucket: this.publicBucket, Key: objectKey, Body: file.buffer, ContentLength: file.size, ContentType: file.mimetype }));
     } catch (error) {
       throw new ServiceUnavailableException(
         `Object storage is unavailable. ${error instanceof Error ? error.message : ''}`,
@@ -204,23 +201,14 @@ export class StorageService implements OnModuleInit {
   }
 
   private async ensurePublicBucket() {
-    if (!(await this.client.bucketExists(this.publicBucket))) {
-      await this.client.makeBucket(this.publicBucket);
+    try { await this.client.send(new HeadBucketCommand({ Bucket: this.publicBucket })); }
+    catch (error) {
+      const notFound = error && typeof error === 'object' && '$metadata' in error && (error as { $metadata: { httpStatusCode?: number } }).$metadata.httpStatusCode === 404;
+      if (!notFound || this.config.get('NODE_ENV') === 'production') throw error;
+      await this.client.send(new CreateBucketCommand({ Bucket: this.publicBucket }));
     }
-    await this.client.setBucketPolicy(
-      this.publicBucket,
-      JSON.stringify({
-        Version: '2012-10-17',
-        Statement: [
-          {
-            Effect: 'Allow',
-            Principal: { AWS: ['*'] },
-            Action: ['s3:GetObject'],
-            Resource: [`arn:aws:s3:::${this.publicBucket}/*`],
-          },
-        ],
-      }),
-    );
+    // Production bucket policy is owned by the VPS initializer, not by the app key.
+    if (this.config.get('NODE_ENV') !== 'production') await this.client.send(new PutBucketPolicyCommand({ Bucket: this.publicBucket, Policy: JSON.stringify({ Version: '2012-10-17', Statement: [{ Effect: 'Allow', Principal: { AWS: ['*'] }, Action: ['s3:GetObject'], Resource: ['arn:aws:s3:::' + this.publicBucket + '/*'] }] }) }));
   }
 
   private hasValidImageSignature(file: ProductUpload) {

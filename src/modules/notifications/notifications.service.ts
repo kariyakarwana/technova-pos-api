@@ -1,3 +1,4 @@
+import { QuotaService } from '../subscriptions/quota.service';
 import {
   BadRequestException,
   Injectable,
@@ -16,6 +17,7 @@ import {
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import nodemailer from 'nodemailer';
+import { smtpOptions } from '../../common/config/smtp';
 import { paginate } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import {
@@ -53,6 +55,7 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly quota: QuotaService,
   ) {}
   private async org(userId: string) {
     const m = await this.prisma.organizationUser.findFirst({
@@ -230,7 +233,11 @@ export class NotificationsService {
     if (template && template.status !== RecordStatus.ACTIVE)
       return { queued: false };
 
-    const loginUrl = `${this.config.getOrThrow<string>('FRONTEND_URL')}/login`;
+    const frontendBaseUrl =
+      (typeof this.config.get === 'function'
+        ? this.config.get<string>('PUBLIC_FRONTEND_URL')?.trim()
+        : undefined) || this.config.getOrThrow<string>('FRONTEND_URL');
+    const loginUrl = `${frontendBaseUrl}/login`;
     const payload: Prisma.InputJsonObject = {
       companyName: input.companyName,
       employeeId: input.employeeId,
@@ -624,6 +631,7 @@ export class NotificationsService {
   }
   async appNotifications(userId: string, q: AppNotificationQueryDto) {
     await this.markHandledPurchaseOrderNotificationsRead(userId);
+    await this.syncTenantAdminUpcomingPaymentNotifications(userId);
     const where: Prisma.AppNotificationWhereInput = {
       recipientUserId: userId,
       readAt: q.unread === 'true' ? null : undefined,
@@ -698,6 +706,113 @@ export class NotificationsService {
       });
     }
   }
+
+  private async syncTenantAdminUpcomingPaymentNotifications(userId: string) {
+    if (!this.prisma.user?.findUnique || !this.prisma.subscriptionInvoice?.findMany) return;
+
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          roles: { include: { role: true } },
+          organizationMemberships: { select: { organizationId: true } },
+        },
+      });
+      if (!user || !user.organizationMemberships?.length) return;
+
+      const isTenantAdmin = user.roles?.some((r) => r.role?.name === 'SUPER_ADMIN');
+      if (!isTenantAdmin) return;
+
+      const orgIds = user.organizationMemberships.map((m) => m.organizationId);
+      const now = new Date();
+      const msPerDay = 1000 * 60 * 60 * 24;
+
+      const pendingInvoices = await this.prisma.subscriptionInvoice.findMany({
+        where: {
+          subscription: { organizationId: { in: orgIds } },
+          status: { in: ['PENDING', 'OVERDUE'] },
+        },
+        include: {
+          subscription: {
+            select: { organizationId: true, organization: { select: { name: true } } },
+          },
+        },
+        orderBy: { dueDate: 'asc' },
+      });
+
+      for (const inv of pendingInvoices) {
+        const diffMs = new Date(inv.dueDate).getTime() - now.getTime();
+        const days = Math.ceil(diffMs / msPerDay);
+
+        // Only alert if within 15 days or overdue
+        if (days > 15) continue;
+
+        let title = `Upcoming Payment in ${days} Days`;
+        if (days < 0) {
+          title = `Subscription Payment Overdue (${Math.abs(days)} Days)`;
+        } else if (days === 0) {
+          title = 'Urgent: Subscription Payment Due Today';
+        } else if (days === 1) {
+          title = 'Urgent: Subscription Payment Due Tomorrow';
+        } else if (days <= 5) {
+          title = `Action Required: Payment Due in ${days} Days`;
+        } else if (days <= 10) {
+          title = `Upcoming Payment in ${days} Days`;
+        } else if (days <= 15) {
+          title = `Renewal Notice (${days} Days Remaining)`;
+        }
+
+        const message = `Monthly subscription invoice #${inv.invoiceNumber} ($${Number(inv.totalAmountUsd).toFixed(2)}) is awaiting payment settlement. Due on ${new Date(inv.dueDate).toLocaleDateString()}.`;
+
+        const existing = await this.prisma.appNotification.findFirst({
+          where: {
+            recipientUserId: userId,
+            eventType: 'BILLING_PAYMENT_REMINDER',
+            title,
+            message: { contains: `#${inv.invoiceNumber}` },
+          },
+          select: { id: true },
+        });
+
+        if (!existing) {
+          await this.prisma.appNotification.create({
+            data: {
+              organizationId: inv.subscription.organizationId,
+              recipientUserId: userId,
+              eventType: 'BILLING_PAYMENT_REMINDER',
+              title,
+              message,
+              actionUrl: '/dashboard/billing',
+            },
+          });
+        }
+      }
+
+      // Auto-reconcile paid invoices: if an invoice is paid, mark related pending notifications as read
+      const paidInvoices = await this.prisma.subscriptionInvoice.findMany({
+        where: {
+          subscription: { organizationId: { in: orgIds } },
+          status: 'PAID',
+        },
+        select: { invoiceNumber: true },
+      });
+      if (paidInvoices.length > 0) {
+        for (const paid of paidInvoices) {
+          await this.prisma.appNotification.updateMany({
+            where: {
+              recipientUserId: userId,
+              eventType: 'BILLING_PAYMENT_REMINDER',
+              message: { contains: `#${paid.invoiceNumber}` },
+              readAt: null,
+            },
+            data: { readAt: new Date() },
+          });
+        }
+      }
+    } catch {
+      // Background sync must not break notification fetch
+    }
+  }
   async readAppNotification(userId: string, id: string) {
     const result = await this.prisma.appNotification.updateMany({
       where: { id, recipientUserId: userId },
@@ -714,6 +829,11 @@ export class NotificationsService {
     return { read: result.count };
   }
   async processPending(limit = 20) {
+    // A crashed worker may have reached the provider. Never blindly resend an uncertain delivery.
+    await this.prisma.notificationOutbox.updateMany({
+      where: { status: OutboxStatus.PROCESSING, updatedAt: { lt: new Date(Date.now() - 10 * 60000) } },
+      data: { status: OutboxStatus.DEAD_LETTER, lastError: 'Interrupted delivery; reconcile with provider before retry.' },
+    });
     const rows = await this.prisma.notificationOutbox.findMany({
       where: {
         channel: {
@@ -724,7 +844,8 @@ export class NotificationsService {
         attemptCount: { lt: 5 },
       },
       include: {
-        domainEvent: { select: { eventType: true, payload: true } },
+        domainEvent: { select: { eventType: true, payload: true, organizationId: true } },
+        template: { select: { organizationId: true } },
       },
       take: limit,
       orderBy: { createdAt: 'asc' },
@@ -738,7 +859,9 @@ export class NotificationsService {
         data: { status: OutboxStatus.PROCESSING },
       });
       if (!claimed.count) continue;
+      let providerAccepted = false;
       try {
+        const targetOrgId = row.template?.organizationId ?? row.domainEvent?.organizationId ?? undefined;
         const providerId = await this.deliver(
           row.channel,
           row.recipient,
@@ -746,7 +869,9 @@ export class NotificationsService {
           row.body,
           row.domainEvent?.eventType,
           row.domainEvent?.payload,
+          targetOrgId,
         );
+        providerAccepted = true;
         await this.prisma.$transaction([
           this.prisma.deliveryAttempt.create({
             data: {
@@ -781,9 +906,9 @@ export class NotificationsService {
             where: { id: row.id },
             data: {
               status:
-                attempts >= 5 ? OutboxStatus.DEAD_LETTER : OutboxStatus.FAILED,
+                providerAccepted || attempts >= 5 ? OutboxStatus.DEAD_LETTER : OutboxStatus.FAILED,
               attemptCount: { increment: 1 },
-              lastError: message,
+              lastError: providerAccepted ? `Provider accepted message; reconcile before retry: ${message}` : message,
               nextAttemptAt: new Date(
                 Date.now() + Math.min(60, 2 ** attempts) * 60_000,
               ),
@@ -856,7 +981,18 @@ export class NotificationsService {
       update: {},
     });
   }
-  private async deliver(
+  private async deliver(channel: NotificationChannel, to: string, subject: string | null, body: string, eventType?: string, payload?: Prisma.JsonValue, organizationId?: string) {
+    let refund: (() => Promise<void>) | undefined;
+    if (organizationId) {
+      const metric = channel === NotificationChannel.EMAIL ? 'emailsSent'
+        : channel === NotificationChannel.WHATSAPP && ['PROMOTION_STARTED','PROMOTION_LAUNCH'].includes(eventType ?? '') ? 'whatsAppMarketingSent'
+        : channel === NotificationChannel.WHATSAPP ? 'whatsAppBillsSent' : null;
+      if (metric) refund = await this.quota.reserveUsage(organizationId, metric);
+    }
+    try { return await this.deliverUnmetered(channel, to, subject, body, eventType, payload); }
+    catch(error) { if (refund) await refund(); throw error; }
+  }
+  private async deliverUnmetered(
     channel: NotificationChannel,
     to: string,
     subject: string | null,
@@ -865,22 +1001,19 @@ export class NotificationsService {
     payload?: Prisma.JsonValue,
   ) {
     if (channel === NotificationChannel.EMAIL) {
-      const transporter = nodemailer.createTransport({
-        host: this.config.getOrThrow('SMTP_HOST'),
-        port: Number(this.config.get('SMTP_PORT') ?? 587),
-        secure: false,
-        auth: {
-          user: this.config.getOrThrow('SMTP_USER'),
-          pass: this.config.getOrThrow('SMTP_PASSWORD'),
-        },
-      });
+
+      // V1 uses only the operator-managed VPS SMTP settings.
+      const transporter = nodemailer.createTransport(smtpOptions(this.config));
+      const fromAddress = this.config.getOrThrow<string>('SMTP_FROM');
+
       const result = await transporter.sendMail({
-        from: this.config.getOrThrow('SMTP_FROM'),
+        from: fromAddress,
         to,
         subject: subject ?? 'TechNova POS notification',
         html: this.emailHtml(body),
         text: this.emailText(body),
       });
+
       return result.messageId;
     }
     if (channel === NotificationChannel.WHATSAPP) {

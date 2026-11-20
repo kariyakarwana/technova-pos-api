@@ -1,3 +1,4 @@
+import { QuotaService } from '../subscriptions/quota.service';
 import {
   ConflictException,
   ForbiddenException,
@@ -36,6 +37,7 @@ export class UsersService {
     private readonly audit: AuditService,
     private readonly auth: AuthService,
     private readonly notifications: NotificationsService,
+    private readonly quota: QuotaService,
   ) {}
 
   private async organizationId(userId: string) {
@@ -104,6 +106,7 @@ export class UsersService {
       select: { name: true },
     });
     if (!organization) throw new NotFoundException('Organization not found.');
+    await this.quota.checkUserCreationAllowed(organizationId);
     await this.validateAssignments(
       actor,
       organizationId,
@@ -341,6 +344,7 @@ export class UsersService {
         select: {
           id: true,
           name: true,
+          scope: true,
           permissions: { select: { permission: { select: { key: true } } } },
         },
       }),
@@ -348,6 +352,9 @@ export class UsersService {
         where: { id: { in: branchIds }, organizationId },
       }),
     ]);
+    if (roles.some(role => role.name === 'PLATFORM_SUPER_ADMIN' || (role.scope !== 'GLOBAL' && role.scope !== organizationId))) {
+      throw new ForbiddenException('Platform and other-tenant roles cannot be assigned here.');
+    }
     if (roles.length !== roleIds.length || branchCount !== branchIds.length)
       throw new ConflictException(
         'One or more role or branch assignments are invalid.',

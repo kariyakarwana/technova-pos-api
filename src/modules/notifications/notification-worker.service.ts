@@ -211,7 +211,9 @@ export class NotificationWorkerService
   private async generateOperationalAlerts() {
     await this.creditReminders();
     await this.lowStockAlerts();
+
   }
+
   private async creditReminders() {
     const now = new Date(),
       until = new Date(Date.now() + 3 * 24 * 60 * 60_000),

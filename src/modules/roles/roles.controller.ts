@@ -21,8 +21,8 @@ import { RolesService } from './roles.service';
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class RolesController {
   constructor(private readonly roles: RolesService) {}
-  @Get() @RequirePermissions('roles:manage') list() {
-    return this.roles.list();
+  @Get() @RequirePermissions('roles:manage') list(@CurrentUser() user: AuthenticatedUser) {
+    return this.roles.list(user);
   }
   @Get('permissions') @RequirePermissions('roles:manage') permissions() {
     return this.roles.permissions();

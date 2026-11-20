@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-base-to-string, @typescript-eslint/restrict-template-expressions */
+ 
 import { Injectable, Logger } from '@nestjs/common';
 import { RecordStatus } from '@prisma/client';
 import { PrismaService } from '../../../../database/prisma/prisma.service';

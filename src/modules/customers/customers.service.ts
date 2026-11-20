@@ -229,7 +229,7 @@ export class CustomersService {
         },
       });
       const role = await transaction.role.upsert({
-        where: { name: 'CUSTOMER' },
+        where: { scope_name: { scope: 'GLOBAL', name: 'CUSTOMER' } },
         update: {
           description: 'Customer mobile application user',
           isSystem: true,
