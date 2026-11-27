@@ -74,7 +74,14 @@ export class CreditService {
       }),
       this.prisma.creditAgreement.count({ where }),
     ]);
-    return paginate(data, total, q);
+    return paginate(
+      data.map((agreement) => ({
+        ...agreement,
+        originalAmount: agreement.principal,
+      })),
+      total,
+      q,
+    );
   }
   async detail(userId: string, id: string) {
     const org = await this.org(userId);
@@ -92,7 +99,7 @@ export class CreditService {
       },
     });
     if (!value) throw new NotFoundException('Credit agreement not found.');
-    return value;
+    return { ...value, originalAmount: value.principal };
   }
   async repay(
     actor: AuthenticatedUser,
